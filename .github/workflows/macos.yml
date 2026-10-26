@@ -3,6 +3,7 @@ name: macOS build
 # Builds a universal (Apple Silicon + Intel) Anix from the macos branch and publishes it as the
 # fork's latest release: the .dmg for a first install, plus the app as .app.tar.gz and
 # mac-update.json, which the app's Settings › Check for updates reads to update itself in place.
+# The backend tests run on macOS first; a failure stops the release.
 on:
   push:
     branches: [macos]
@@ -52,6 +53,14 @@ jobs:
           key: macos-cargo-${{ hashFiles('src-tauri/Cargo.lock') }}
           restore-keys: |
             macos-cargo-
+
+      # A failing test stops here, before anything is built or published, so the app's
+      # Check for updates is never offered a build that fails on macOS.
+      - name: Build the frontend for the tests
+        run: npm run build
+
+      - name: Run the backend tests on macOS
+        run: cargo test --manifest-path src-tauri/Cargo.toml
 
       - name: Build universal app
         env:
