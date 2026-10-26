@@ -1,0 +1,81 @@
+name: macOS build
+
+# Builds a universal (Apple Silicon + Intel) Anix.dmg from the macos branch and publishes it
+# as a GitHub release named "Anix <version> for macOS".
+on:
+  push:
+    branches: [macos]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: macos-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build macOS app
+    runs-on: macos-14
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            src-tauri/target/
+          key: macos-cargo-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: |
+            macos-cargo-
+
+      - name: Build universal app
+        run: npx --no-install tauri build --target universal-apple-darwin
+
+      - name: Find the disk image
+        id: dmg
+        run: |
+          version=$(node -p "require('./package.json').version")
+          src=$(ls src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg | head -n1)
+          dest="Anix_${version}_macOS_universal.dmg"
+          cp "$src" "$dest"
+          echo "path=$dest" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Anix-macOS
+          path: ${{ steps.dmg.outputs.path }}
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: mac-v${{ steps.dmg.outputs.version }}
+          name: Anix ${{ steps.dmg.outputs.version }} for macOS
+          target_commitish: ${{ github.sha }}
+          prerelease: true
+          files: ${{ steps.dmg.outputs.path }}
+          body: |
+            Unofficial macOS build of Anix ${{ steps.dmg.outputs.version }}, from the `macos` branch of this fork.
+            Universal app (Apple Silicon and Intel), not notarized. See MACOS.md for how to open it the first time.
