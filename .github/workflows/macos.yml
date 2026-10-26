@@ -1,7 +1,8 @@
 name: macOS build
 
-# Builds a universal (Apple Silicon + Intel) Anix.dmg from the macos branch and publishes it
-# as a GitHub release named "Anix <version> for macOS".
+# Builds a universal (Apple Silicon + Intel) Anix from the macos branch and publishes it as the
+# fork's latest release: the .dmg for a first install, plus the app as .app.tar.gz and
+# mac-update.json, which the app's Settings › Check for updates reads to update itself in place.
 on:
   push:
     branches: [macos]
@@ -22,6 +23,9 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          # Full history and tags, for the release notes since the previous build.
+          fetch-depth: 0
 
       - name: Setup Node.js 22
         uses: actions/setup-node@v4
@@ -50,32 +54,73 @@ jobs:
             macos-cargo-
 
       - name: Build universal app
+        env:
+          # Read at compile time by src-tauri/src/clients/mac_update.rs.
+          ANIX_MAC_UPDATE_REPO: ${{ github.repository }}
+          ANIX_MAC_BUILD: ${{ github.run_number }}
         run: npx --no-install tauri build --target universal-apple-darwin
 
-      - name: Find the disk image
-        id: dmg
+      - name: Package the release files
+        id: pkg
+        env:
+          REPO: ${{ github.repository }}
+          BUILD: ${{ github.run_number }}
         run: |
+          set -euo pipefail
           version=$(node -p "require('./package.json').version")
-          src=$(ls src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg | head -n1)
-          dest="Anix_${version}_macOS_universal.dmg"
-          cp "$src" "$dest"
-          echo "path=$dest" >> "$GITHUB_OUTPUT"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
+          tag="mac-v${version}-b${BUILD}"
+          bundle_dir=src-tauri/target/universal-apple-darwin/release/bundle
+          app=$(ls -d "$bundle_dir"/macos/*.app | head -n1)
+
+          dmg="Anix_${version}_b${BUILD}_macOS_universal.dmg"
+          cp "$(ls "$bundle_dir"/dmg/*.dmg | head -n1)" "$dmg"
+
+          archive="Anix_${version}_b${BUILD}_macOS.app.tar.gz"
+          COPYFILE_DISABLE=1 tar -czf "$archive" -C "$(dirname "$app")" "$(basename "$app")"
+          sha=$(shasum -a 256 "$archive" | cut -d' ' -f1)
+          size=$(stat -f%z "$archive")
+
+          prev=$(git tag --list 'mac-v*' --sort=-creatordate | head -n1 || true)
+          if [ -n "$prev" ]; then
+            notes=$(git log --no-merges --format='- %s' "$prev..HEAD" | head -n 30)
+          else
+            notes=$(git log --no-merges --format='- %s' -n 15)
+          fi
+          [ -n "$notes" ] || notes="Rebuild of Anix ${version} for macOS."
+
+          jq -n \
+            --arg version "$version" --argjson build "$BUILD" \
+            --arg url "https://github.com/${REPO}/releases/download/${tag}/${archive}" \
+            --arg sha256 "$sha" --argjson size "$size" --arg notes "$notes" \
+            --arg published_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg release_url "https://github.com/${REPO}/releases/tag/${tag}" \
+            '{version: $version, build: $build, url: $url, sha256: $sha256, size: $size, notes: $notes, published_at: $published_at, release_url: $release_url}' \
+            > mac-update.json
+          cat mac-update.json
+
+          printf '%s\n' "$notes" > notes.md
+          {
+            echo "version=$version"
+            echo "tag=$tag"
+            echo "dmg=$dmg"
+            echo "archive=$archive"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
           name: Anix-macOS
-          path: ${{ steps.dmg.outputs.path }}
+          path: ${{ steps.pkg.outputs.dmg }}
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: mac-v${{ steps.dmg.outputs.version }}
-          name: Anix ${{ steps.dmg.outputs.version }} for macOS
+          tag_name: ${{ steps.pkg.outputs.tag }}
+          name: Anix ${{ steps.pkg.outputs.version }} for macOS (build ${{ github.run_number }})
           target_commitish: ${{ github.sha }}
-          prerelease: true
-          files: ${{ steps.dmg.outputs.path }}
-          body: |
-            Unofficial macOS build of Anix ${{ steps.dmg.outputs.version }}, from the `macos` branch of this fork.
-            Universal app (Apple Silicon and Intel), not notarized. See MACOS.md for how to open it the first time.
+          make_latest: true
+          files: |
+            ${{ steps.pkg.outputs.dmg }}
+            ${{ steps.pkg.outputs.archive }}
+            mac-update.json
+          body_path: notes.md
