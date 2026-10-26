@@ -9,6 +9,7 @@ import { Spinner } from './ui/Spinner';
 import { errorMessage } from './ui/ErrorState';
 import { useUIStore } from '../stores/uiStore';
 import { useCheckUpdate } from '../hooks/useSettings';
+import { useUpdatePrompt } from '../hooks/useUpdatePrompt';
 import { useOpenExternal } from '../hooks/useOpenExternal';
 import type { UpdateInstallSupport } from '../types';
 import { locale, t } from '../i18n';
@@ -52,6 +53,9 @@ export const UpdateDialog: React.FC = () => {
       unlisten?.();
     };
   }, [installing]);
+
+  // Offers a newer version found by the launch check without a visit to Settings.
+  useUpdatePrompt(updateInfo?.version);
 
   if (!updateInfo) return null;
 

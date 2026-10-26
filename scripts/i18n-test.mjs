@@ -6,6 +6,7 @@ import {
   catalogProblems, htmlLang, interpolate, intlLocale, isRtl, resolveLanguage, translate,
 } from '../src/i18n/core.ts';
 import { isNewerVersion, needsSetup } from '../src/lib/version.ts';
+import { shouldPromptForUpdate } from '../src/lib/updatePrompt.ts';
 import { withChoice } from '../src/lib/languageChoice.ts';
 
 const en = {
@@ -80,3 +81,14 @@ assert.deepEqual(withChoice(['en', 'es', 'fr', 'it', 'de'], 2, 'it'), ['en', 'es
 assert.deepEqual(withChoice(['en', 'es', 'fr', 'it'], 2, 'ja'), ['en', 'es', 'ja', 'it']);
 
 console.log('i18n tests passed');
+
+// The update dialog opens by itself once per run, and never over an episode or another dialog.
+{
+  const base = { available: '1.3.0-mac.6', alreadyPrompted: false, onWatchScreen: false, dialogOpen: false };
+  assert.equal(shouldPromptForUpdate(base), true);
+  assert.equal(shouldPromptForUpdate({ ...base, available: null }), false);
+  assert.equal(shouldPromptForUpdate({ ...base, available: '' }), false);
+  assert.equal(shouldPromptForUpdate({ ...base, alreadyPrompted: true }), false);
+  assert.equal(shouldPromptForUpdate({ ...base, onWatchScreen: true }), false);
+  assert.equal(shouldPromptForUpdate({ ...base, dialogOpen: true }), false);
+}
