@@ -51,6 +51,8 @@ brew install --cask vlc
 The macOS changes are small and kept in a few places, so most updates merge without conflicts:
 
 - `src-tauri/tauri.macos.conf.json`, `src-tauri/Info.plist`: bundle settings.
+- `src-tauri/icons/macos/icon.icns`: a real macOS icon (the shared `icons/icon.icns` is a PNG
+  with the wrong extension, which macOS shows as a blank grey icon).
 - `.github/workflows/macos.yml`: the build.
 - `src-tauri/src/notifier.rs`: notifications without the Linux click action.
 - `src-tauri/src/mpris.rs`: MPRIS commands do nothing on macOS.
