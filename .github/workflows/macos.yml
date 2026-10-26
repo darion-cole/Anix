@@ -7,6 +7,9 @@ name: macOS build
 on:
   push:
     branches: [macos]
+    # Documentation-only commits change nothing in the app, so they make no new build.
+    paths-ignore:
+      - '**.md'
   workflow_dispatch:
 
 permissions:
