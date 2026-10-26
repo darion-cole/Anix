@@ -1,0 +1,108 @@
+name: Sync upstream release
+
+# Once a day, merges the newest release of the original Anix into the macos branch and starts
+# the macOS build, so the app's Check for updates finds it. Only published upstream releases
+# are merged, not every commit. When the merge needs a person (a conflict with the macOS
+# changes, or upstream changed a workflow file, which this job's token may not push), the run
+# fails and opens an issue saying so.
+on:
+  schedule:
+    - cron: '17 9 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+  issues: write
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+env:
+  UPSTREAM: MaidLover69/Anix
+  BRANCH: macos
+
+jobs:
+  sync:
+    name: Merge the latest upstream release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout the macos branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.BRANCH }}
+          fetch-depth: 0
+
+      - name: Find the latest upstream release
+        id: upstream
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag=$(gh api "repos/${UPSTREAM}/releases/latest" --jq .tag_name)
+          echo "Latest upstream release: $tag"
+          git remote add upstream "https://github.com/${UPSTREAM}.git"
+          git fetch --no-tags upstream "refs/tags/${tag}:refs/upstream-release/${tag}"
+          if git merge-base --is-ancestor "refs/upstream-release/${tag}" HEAD; then
+            echo "Already includes ${tag}; nothing to do."
+            echo "needed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "needed=true" >> "$GITHUB_OUTPUT"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Merge it
+        id: merge
+        if: steps.upstream.outputs.needed == 'true'
+        env:
+          TAG: ${{ steps.upstream.outputs.tag }}
+        run: |
+          set -uo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if ! git merge --no-edit -m "chore: merge upstream Anix ${TAG}" "refs/upstream-release/${TAG}"; then
+            git diff --name-only --diff-filter=U > conflicts.txt
+            git merge --abort
+            echo "problem=conflict" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          if ! git push origin "HEAD:${BRANCH}"; then
+            echo "problem=push" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+      - name: Start the macOS build
+        if: steps.upstream.outputs.needed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # A push made with this job's token does not start other workflows by itself.
+        run: gh workflow run macos.yml --ref "${BRANCH}"
+
+      - name: Ask for help
+        if: failure() && steps.upstream.outputs.needed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.upstream.outputs.tag }}
+          PROBLEM: ${{ steps.merge.outputs.problem }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ "$PROBLEM" = "conflict" ]; then
+            reason="The merge conflicts with the macOS changes in:"$'\n\n'"$(sed 's/^/- `/; s/$/`/' conflicts.txt)"
+          elif [ "$PROBLEM" = "push" ]; then
+            reason="The merge worked, but it could not be pushed. Upstream probably changed a file in .github/workflows, which this automatic job is not allowed to push."
+          else
+            reason="The sync failed; see the run log."
+          fi
+          body="Upstream Anix ${TAG} could not be merged into the \`${BRANCH}\` branch automatically."$'\n\n'"${reason}"$'\n\n'"Run: ${RUN_URL}"$'\n\n'"To fix it, ask Claude to merge upstream Anix ${TAG} into the ${BRANCH} branch of ${GITHUB_REPOSITORY} and resolve the conflicts."
+          title="Merge upstream Anix ${TAG} by hand"
+          existing=$(gh issue list --state open --search "in:title \"${title}\"" --json number --jq '.[0].number' 2>/dev/null || true)
+          if [ -z "$existing" ]; then
+            gh issue create --title "$title" --body "$body" || echo "::warning::Could not open an issue (are issues turned on for this repository?)"
+          fi
+          {
+            echo "## Upstream ${TAG} needs a manual merge"
+            echo
+            echo "$reason"
+          } >> "$GITHUB_STEP_SUMMARY"
