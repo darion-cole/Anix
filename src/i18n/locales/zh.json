@@ -1624,6 +1624,7 @@
   "updateDialog.downloadingPercent": "正在下载… {percent}%",
   "updateDialog.install": "安装",
   "updateDialog.installFailed": "无法安装更新。",
+  "updateDialog.installHintMac": "“安装”会下载新版本，用发布的校验和进行校验，然后替换文件夹中的 Anix。当前版本会作为隐藏备份保留在旁边。",
   "updateDialog.installHint": "“安装”会下载新的 AppImage，用发布的校验和进行校验，然后替换当前文件。当前版本会以 .bak 文件保留在旁边。",
   "updateDialog.installed": "Anix {version} 已安装。重启后即可使用。",
   "updateDialog.installing": "正在安装…",

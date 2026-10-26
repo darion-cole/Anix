@@ -1774,6 +1774,7 @@
   "updateDialog.downloadingPercent": "Téléchargement… {percent} %",
   "updateDialog.install": "Installer",
   "updateDialog.installFailed": "La mise à jour n’a pas pu être installée.",
+  "updateDialog.installHintMac": "Installer télécharge la nouvelle version, la vérifie avec la somme de contrôle publiée et remplace Anix dans son dossier. La version actuelle est conservée à côté comme sauvegarde cachée.",
   "updateDialog.installHint": "Installer télécharge la nouvelle AppImage, la vérifie avec la somme de contrôle publiée et remplace celle-ci. La version actuelle est conservée à côté dans un fichier .bak.",
   "updateDialog.installed": "Anix {version} est installé. Redémarrez pour l’utiliser.",
   "updateDialog.installing": "Installation…",

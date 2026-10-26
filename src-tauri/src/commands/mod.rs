@@ -8,6 +8,8 @@ pub mod library;
 pub mod local_library;
 pub mod local_media;
 pub mod local_scanner;
+#[cfg(target_os = "macos")]
+pub mod mac_updates;
 pub mod mal;
 pub mod notices;
 pub mod player;

@@ -142,7 +142,10 @@ export const UpdateDialog: React.FC = () => {
           {updateInfo.changelog || t('updateDialog.noNotes')}
         </div>
         {canInstall && install.step === 'idle' && (
-          <p className="text-xs text-text-muted">{t('updateDialog.installHint')}</p>
+          <p className="text-xs text-text-muted">
+            {/* The macOS build replaces the app bundle rather than an AppImage. */}
+            {/Macintosh|Mac OS X/.test(navigator.userAgent) ? t('updateDialog.installHintMac') : t('updateDialog.installHint')}
+          </p>
         )}
         {installing && (
           <div aria-live="polite" className="flex flex-col gap-1.5">

@@ -3,6 +3,7 @@ pub mod app_settings;
 pub mod animethemes;
 pub mod aniskip;
 pub mod update;
+pub mod mac_update;
 pub mod http;
 pub mod imdb;
 pub mod jikan;

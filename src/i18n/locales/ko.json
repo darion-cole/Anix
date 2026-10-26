@@ -1624,6 +1624,7 @@
   "updateDialog.downloadingPercent": "다운로드 중… {percent}%",
   "updateDialog.install": "설치",
   "updateDialog.installFailed": "업데이트를 설치하지 못했어요.",
+  "updateDialog.installHintMac": "설치를 누르면 새 버전을 받아서 공개된 체크섬과 대조한 뒤 폴더에 있는 Anix를 교체해요. 현재 버전은 옆에 숨겨진 백업으로 보관돼요.",
   "updateDialog.installHint": "설치를 누르면 새 AppImage를 받아서 공개된 체크섬과 대조한 뒤 지금 파일을 교체해요. 현재 버전은 옆에 .bak 파일로 보관돼요.",
   "updateDialog.installed": "Anix {version}이(가) 설치됐어요. 쓰려면 다시 시작하세요.",
   "updateDialog.installing": "설치하는 중…",

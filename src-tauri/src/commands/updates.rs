@@ -1,3 +1,5 @@
+// On macOS each command hands over to `mac_updates` first, leaving the AppImage code below unreachable.
+#![cfg_attr(target_os = "macos", allow(unreachable_code))]
 use crate::clients::update::{self, fetch_latest_release, UpdateInfo, SITE_URL};
 use crate::state::AppState;
 use serde::Serialize;
@@ -5,6 +7,8 @@ use tauri::{AppHandle, Emitter, State};
 
 #[tauri::command]
 pub async fn check_for_update(state: State<'_, AppState>) -> Result<Option<UpdateInfo>, String> {
+    #[cfg(target_os = "macos")]
+    return crate::commands::mac_updates::check_for_update(state).await;
     fetch_latest_release(&state.client).await
 }
 
@@ -27,6 +31,8 @@ fn running_appimage() -> Result<std::path::PathBuf, String> {
 
 #[tauri::command]
 pub fn get_update_install_support() -> UpdateInstallSupport {
+    #[cfg(target_os = "macos")]
+    return crate::commands::mac_updates::get_update_install_support();
     match running_appimage() {
         Ok(_) => UpdateInstallSupport { appimage: true, reason: None },
         Err(reason) => UpdateInstallSupport { appimage: false, reason: Some(reason) },
@@ -41,6 +47,8 @@ pub const UPDATE_PROGRESS_EVENT: &str = "update-progress";
 /// clicks Install. Returns the path of the AppImage to restart.
 #[tauri::command]
 pub async fn install_update(app: AppHandle, state: State<'_, AppState>) -> Result<String, String> {
+    #[cfg(target_os = "macos")]
+    return crate::commands::mac_updates::install_update(app, state).await;
     let target = running_appimage()?;
     // The address and checksum are read again here; the page cannot supply them.
     let info = fetch_latest_release(&state.client)
@@ -68,6 +76,8 @@ pub async fn install_update(app: AppHandle, state: State<'_, AppState>) -> Resul
 /// the single-instance check does not hand it back to the old window.
 #[tauri::command]
 pub fn restart_after_update(app: AppHandle) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    return crate::commands::mac_updates::restart_after_update(app);
     let target = running_appimage()?;
     crate::commands::player::sanitized_command("sh")
         .args(["-c", "sleep 2; exec \"$0\""])

@@ -66,6 +66,9 @@ assert.equal(needsSetup('1.3.0', '1.3.0'), false, 'already seen in this version'
 assert.equal(needsSetup('1.3.0', '1.3.1'), true);
 assert.equal(needsSetup('1.4.0', '1.3.0'), false, 'a downgrade does not ask');
 assert.equal(isNewerVersion('1.10.0', '1.9.9'), true);
+// macOS builds are offered as `<version>-mac.<build>`; the backend has already decided they are newer.
+assert.equal(isNewerVersion('1.3.0-mac.5', '1.3.0'), true);
+assert.equal(isNewerVersion('1.4.0-mac.1', '1.3.0'), true);
 
 // First/second/third choice
 assert.deepEqual(withChoice(['en'], 1, 'es'), ['en', 'es']);

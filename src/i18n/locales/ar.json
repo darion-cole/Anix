@@ -1999,6 +1999,7 @@
   "updateDialog.downloadingPercent": "جارٍ التنزيل… {percent}%",
   "updateDialog.install": "ثبّت",
   "updateDialog.installFailed": "تعذّر تثبيت التحديث.",
+  "updateDialog.installHintMac": "«ثبّت» ينزّل الإصدار الجديد، ويتحقق منه مقابل المجموع الاختباري المنشور، ويستبدل به Anix في مجلده. وتُحفظ النسخة الحالية بجانبه كنسخة احتياطية مخفية.",
   "updateDialog.installHint": "«ثبّت» ينزّل ملف AppImage الجديد، ويتحقق منه مقابل المجموع الاختباري المنشور، ويستبدل به هذا الملف. وتُحفظ النسخة الحالية بجانبه كملف ‎.bak.",
   "updateDialog.installed": "ثُبّت Anix {version}. أعد التشغيل لتبدأ استخدامه.",
   "updateDialog.installing": "جارٍ التثبيت…",

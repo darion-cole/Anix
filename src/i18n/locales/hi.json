@@ -1699,6 +1699,7 @@
   "updateDialog.downloadingPercent": "डाउनलोड हो रहा है… {percent}%",
   "updateDialog.install": "इंस्टॉल करें",
   "updateDialog.installFailed": "अपडेट इंस्टॉल नहीं हो सका।",
+  "updateDialog.installHintMac": "“इंस्टॉल करें” नया संस्करण डाउनलोड करता है, उसे प्रकाशित चेकसम से जाँचता है और उसके फ़ोल्डर में Anix की जगह लगा देता है। मौजूदा संस्करण इसके पास एक छिपे बैकअप के रूप में रखा जाता है।",
   "updateDialog.installHint": "“इंस्टॉल करें” नया AppImage डाउनलोड करता है, उसे प्रकाशित चेकसम से जाँचता है और इसकी जगह लगा देता है। मौजूदा संस्करण इसके पास .bak फ़ाइल के रूप में रखा जाता है।",
   "updateDialog.installed": "Anix {version} इंस्टॉल हो गया है। इसे इस्तेमाल करने के लिए रीस्टार्ट करें।",
   "updateDialog.installing": "इंस्टॉल हो रहा है…",
