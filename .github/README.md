@@ -82,8 +82,8 @@ offers it in a dialog (you can also check from **Settings › Check for updates*
 in place and keeps the previous version as a hidden backup. **Restart now** opens the new
 version. Your library and settings are kept.
 
-New releases of the original Anix are merged into this fork automatically every day, and each
-build runs the test suite on a Mac before it is published.
+New releases of the original Anix are merged into this fork automatically every day and built
+for macOS.
 
 ---
 
