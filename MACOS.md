@@ -50,7 +50,9 @@ You install the .dmg once. After that, updates arrive like this:
 2. **Every build of `macos` is published as a release** with the .dmg, the app as
    `.app.tar.gz`, and `mac-update.json`. Builds are numbered, so a macOS-only fix is offered as
    an update even when the Anix version stays the same (shown as `1.3.0-mac.<build>`).
-3. **In the app**, Settings › Check for updates (and the automatic check) finds the new build.
+3. **In the app**, the check at launch finds the new build and opens the update dialog by
+   itself (once per launch; it waits until you leave the player or close another dialog). You
+   can also check any time from Settings › Check for updates.
    **Install** downloads it, checks its SHA-256, replaces Anix in its folder and keeps the
    previous version as a hidden `.Anix.app.previous` next to it. **Restart now** opens the
    new version. Your library and settings stay.
