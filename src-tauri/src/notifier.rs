@@ -33,7 +33,9 @@ use crate::models::Category;
 use crate::release_check::{self, ReleaseChecks};
 use crate::state::AppState;
 use async_trait::async_trait;
-use notify_rust::{Hint, NotificationHandle, NotificationResponse, Timeout};
+#[cfg(target_os = "linux")]
+use notify_rust::{Hint, NotificationHandle};
+use notify_rust::{NotificationResponse, Timeout};
 use reqwest::header::RETRY_AFTER;
 use serde_json::{json, Value};
 use sqlx::SqlitePool;
@@ -43,7 +45,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tauri::{Emitter, Manager};
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+#[cfg(target_os = "linux")]
+use tokio::sync::OwnedSemaphorePermit;
+use tokio::sync::Semaphore;
 use tracing::{error, info, warn};
 
 pub use crate::db::NotificationBell as Bell;
@@ -89,6 +93,7 @@ const POPUP_TIMEOUT_MS: u32 = 15_000;
 const SERVICE_TIMEOUT: Duration = Duration::from_secs(10);
 /// A notification the desktop keeps in its list is withdrawn after this long, which also
 /// ends the task waiting for its click.
+#[cfg(target_os = "linux")]
 const KEEP_CLICKABLE: Duration = Duration::from_secs(CATCH_UP_WINDOW_S as u64);
 /// Notifications waiting for a click at the same time; each holds a session-bus connection.
 const MAX_CLICKABLE: usize = 16;
@@ -886,6 +891,8 @@ fn act_on_click(app: &tauri::AppHandle, click: Click) {
 
 /// Waits until the notification is clicked or closed. Holding `handle` keeps the session-bus
 /// connection the click is reported on; `_slot` is given back when the wait ends.
+/// Linux only: macOS notifications from `notify-rust` cannot report a click.
+#[cfg(target_os = "linux")]
 async fn wait_for_click(
     on_click: OnClick,
     handle: NotificationHandle,
@@ -908,8 +915,14 @@ async fn wait_for_click(
 /// What a click on a notification does.
 pub type OnClick = Arc<dyn Fn(Click) + Send + Sync>;
 
+/// The app's bundle identifier on macOS (`identifier` in `tauri.conf.json`).
+#[cfg(target_os = "macos")]
+const MACOS_BUNDLE_ID: &str = "io.anix.app";
+
 /// Shows notifications on the desktop, with the cover as the icon when a local copy can be
 /// had quickly and the app's own icon otherwise.
+// Click handling is Linux-only, so macOS builds leave `on_click` and `clickable` unread.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub struct DesktopSink {
     on_click: OnClick,
     client: reqwest::Client,
@@ -922,6 +935,12 @@ pub struct DesktopSink {
 
 impl DesktopSink {
     pub fn new(app_name: String, client: reqwest::Client, cover_dir: Option<PathBuf>, on_click: OnClick) -> Self {
+        // macOS attributes a notification to an app by its bundle id; without this the
+        // notification centre shows it as coming from another app.
+        #[cfg(target_os = "macos")]
+        if let Err(e) = notify_rust::set_application(MACOS_BUNDLE_ID) {
+            warn!("Could not set the notification sender: {}", e);
+        }
         Self {
             on_click,
             client,
@@ -941,6 +960,44 @@ impl NotificationSink for DesktopSink {
             }
             None => None,
         };
+        #[cfg(target_os = "linux")]
+        self.show_linux(notification, icon).await;
+        #[cfg(not(target_os = "linux"))]
+        self.show_plain(notification, icon).await;
+    }
+}
+
+impl DesktopSink {
+    /// Shows a notification without a click action, for desktops (macOS) where `notify-rust`
+    /// cannot report clicks. The cover icon is not used there: macOS always shows the app's icon.
+    #[cfg(not(target_os = "linux"))]
+    async fn show_plain(&self, notification: &ReleaseNotification, _icon: Option<PathBuf>) {
+        let mut popup = notify_rust::Notification::new();
+        popup
+            .appname(&self.app_name)
+            .summary(&notification.title)
+            .body(&notification.body_in(crate::i18n::current()))
+            .timeout(Timeout::Milliseconds(POPUP_TIMEOUT_MS));
+        // Sending blocks until the notification centre answers, so keep it off the async threads.
+        let sent = tokio::time::timeout(
+            SERVICE_TIMEOUT,
+            tokio::task::spawn_blocking(move || popup.show().map(|_| ())),
+        )
+        .await;
+        match sent {
+            Ok(Ok(Ok(()))) => {}
+            Ok(Ok(Err(e))) => warn!("Could not show the release notification for {}: {}", notification.title, e),
+            Ok(Err(e)) => warn!("Could not show the release notification for {}: {}", notification.title, e),
+            Err(_) => warn!(
+                "Could not show the release notification for {}: the notification service did not answer",
+                notification.title
+            ),
+        }
+    }
+
+    /// Shows a freedesktop notification that opens the anime when clicked.
+    #[cfg(target_os = "linux")]
+    async fn show_linux(&self, notification: &ReleaseNotification, icon: Option<PathBuf>) {
         // Without a free slot the notification is shown without a click action, so the
         // desktop never offers a click that nothing would answer.
         let slot = self.clickable.clone().try_acquire_owned().ok();

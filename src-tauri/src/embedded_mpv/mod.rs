@@ -453,6 +453,10 @@ fn load_lib() -> Result<&'static ffi::Lib, String> {
 
 fn decision() -> &'static Start {
     DECISION.get_or_init(|| {
+        // The embedded player is drawn through GTK, which only the Linux build has.
+        if cfg!(not(target_os = "linux")) {
+            return Start::Web { reason: None };
+        }
         let args: Vec<String> = std::env::args().collect();
         let forced = policy::forced_web(&args, std::env::var("ANIX_PLAYER_ENGINE").ok().as_deref());
         let state = load_state();

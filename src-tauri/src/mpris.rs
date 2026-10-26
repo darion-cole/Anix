@@ -2,6 +2,9 @@
 //! desktop widgets and `playerctl` can see and drive it. The Watch screen reports its state
 //! with `mpris_update` and withdraws it with `mpris_clear`; requests from the bus reach the
 //! player as `MPRIS_EVENT` events.
+//!
+//! MPRIS is a Linux (D-Bus) protocol; on macOS both commands succeed without doing anything.
+#![cfg_attr(not(target_os = "linux"), allow(dead_code, unused_imports))]
 
 use std::collections::HashMap;
 use std::time::Instant;
@@ -331,6 +334,17 @@ async fn export(send: Sender, raise: Raiser, state: MprisState) -> zbus::Result<
 /// Exports the player on the session bus, or updates what it shows.
 #[tauri::command]
 pub async fn mpris_update(app: AppHandle, state: MprisState) -> Result<(), String> {
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (app, state);
+        Ok(())
+    }
+    #[cfg(target_os = "linux")]
+    mpris_update_linux(app, state).await
+}
+
+#[cfg(target_os = "linux")]
+async fn mpris_update_linux(app: AppHandle, state: MprisState) -> Result<(), String> {
     let mut guard = CONNECTION.lock().await;
     let Some(connection) = guard.as_ref() else {
         let events = app.clone();
@@ -395,6 +409,14 @@ async fn update(connection: &Connection, state: MprisState) -> zbus::Result<()> 
 /// Withdraws the player from the session bus.
 #[tauri::command]
 pub async fn mpris_clear() -> Result<(), String> {
+    #[cfg(not(target_os = "linux"))]
+    return Ok(());
+    #[cfg(target_os = "linux")]
+    mpris_clear_linux().await
+}
+
+#[cfg(target_os = "linux")]
+async fn mpris_clear_linux() -> Result<(), String> {
     let Some(connection) = CONNECTION.lock().await.take() else { return Ok(()) };
     let _ = connection.object_server().remove::<Player, _>(OBJECT_PATH).await;
     let _ = connection.object_server().remove::<Root, _>(OBJECT_PATH).await;

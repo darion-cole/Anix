@@ -345,3 +345,19 @@ fn external_player_gets_the_subtitle_files() {
     assert_eq!(subtitle_file_name(7, 0, Some("pt-BR / Brasil"), "srt"), "anix_sub_7_1_pt_BR___Brasil.srt");
     assert_eq!(subtitle_file_name(7, 2, None, "vtt"), "anix_sub_7_3_subtitle.vtt");
 }
+
+#[cfg(not(target_os = "macos"))]
+#[test]
+fn host_programs_are_run_by_name_outside_macos() {
+    use anix_lib::commands::player::host_program;
+    assert_eq!(host_program("mpv"), std::path::PathBuf::from("mpv"));
+    assert_eq!(host_program("vlc"), std::path::PathBuf::from("vlc"));
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn host_programs_fall_back_to_their_name_when_not_installed() {
+    use anix_lib::commands::player::host_program;
+    let missing = "anix-no-such-program";
+    assert_eq!(host_program(missing), std::path::PathBuf::from(missing));
+}

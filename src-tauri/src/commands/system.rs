@@ -43,7 +43,9 @@ pub async fn save_diagnostics_report(app: AppHandle, state: State<'_, AppState>)
 #[tauri::command]
 pub async fn open_log_folder() -> Result<(), String> {
     let dir = crate::db::get_app_dir().map_err(|e| e.to_string())?;
-    crate::commands::player::sanitized_command("xdg-open")
+    // `open` is macOS's equivalent of `xdg-open`.
+    let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+    crate::commands::player::sanitized_command(opener)
         .arg(&dir)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())

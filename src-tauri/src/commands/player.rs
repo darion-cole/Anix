@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// Environment variables the AppImage launcher and its GTK hook point at the bundle.
@@ -42,9 +42,66 @@ pub fn strip_appdir_entries(value: &str, appdir: &str) -> String {
         .join(":")
 }
 
+/// Folders that Homebrew and MacPorts install programs into. Apps opened from the Dock or
+/// Finder start with only the system folders on `PATH`, so mpv, VLC and ffmpeg from there
+/// would not be found.
+#[cfg(target_os = "macos")]
+const MACOS_EXTRA_BIN_DIRS: [&str; 3] = ["/opt/homebrew/bin", "/usr/local/bin", "/opt/local/bin"];
+
+/// The program to run for `program`. On macOS this finds VLC inside `VLC.app` and looks in
+/// the Homebrew/MacPorts folders; elsewhere, and when nothing is found, it is `program` itself.
+pub fn host_program(program: &str) -> PathBuf {
+    #[cfg(target_os = "macos")]
+    if let Some(found) = macos_program(program) {
+        return found;
+    }
+    PathBuf::from(program)
+}
+
+#[cfg(target_os = "macos")]
+fn macos_program(program: &str) -> Option<PathBuf> {
+    if program.contains('/') {
+        return None;
+    }
+    if program == "vlc" {
+        let mut apps = vec![PathBuf::from("/Applications")];
+        if let Some(home) = dirs::home_dir() {
+            apps.push(home.join("Applications"));
+        }
+        let bundled = apps.into_iter().map(|dir| dir.join("VLC.app/Contents/MacOS/VLC")).find(|p| p.is_file());
+        if bundled.is_some() {
+            return bundled;
+        }
+    }
+    let on_path = std::env::var_os("PATH")
+        .map(|path| std::env::split_paths(&path).collect::<Vec<_>>())
+        .unwrap_or_default();
+    on_path
+        .into_iter()
+        .chain(MACOS_EXTRA_BIN_DIRS.iter().map(PathBuf::from))
+        .map(|dir| dir.join(program))
+        .find(|candidate| candidate.is_file())
+}
+
+/// `PATH` with the Homebrew/MacPorts folders added, so a started program finds its helpers.
+#[cfg(target_os = "macos")]
+fn macos_search_path() -> std::ffi::OsString {
+    let mut dirs: Vec<PathBuf> = std::env::var_os("PATH")
+        .map(|path| std::env::split_paths(&path).collect())
+        .unwrap_or_default();
+    for extra in MACOS_EXTRA_BIN_DIRS {
+        if !dirs.iter().any(|d| d == Path::new(extra)) {
+            dirs.push(PathBuf::from(extra));
+        }
+    }
+    std::env::join_paths(dirs).unwrap_or_default()
+}
+
 /// A `Command` for a host program that does not inherit the AppImage's bundle environment.
 pub fn sanitized_command(program: &str) -> Command {
-    let mut cmd = Command::new(program);
+    let mut cmd = Command::new(host_program(program));
+    #[cfg(target_os = "macos")]
+    cmd.env("PATH", macos_search_path());
 
     if let Ok(appdir) = std::env::var("APPDIR") {
         if !appdir.is_empty() {

@@ -1,5 +1,7 @@
 //! What the desktop says about window buttons and the accent colour, so the custom title
 //! bar and the theme can follow it. Every lookup is optional and falls back quietly.
+//! On macOS the layout is fixed (buttons on the left) and the Linux lookups are not used.
+#![cfg_attr(target_os = "macos", allow(dead_code))]
 
 use crate::commands::player::sanitized_command;
 use serde::Serialize;
@@ -251,6 +253,23 @@ fn kde_accent() -> Option<String> {
 /// Window-button layout and accent colour of the running desktop.
 #[tauri::command]
 pub async fn get_desktop_appearance() -> Result<DesktopAppearance, String> {
+    // macOS has no GNOME/KDE settings to read; its window buttons sit on the left, close first.
+    #[cfg(target_os = "macos")]
+    return Ok(DesktopAppearance {
+        button_layout: ButtonLayout {
+            left: vec![WindowButton::Close, WindowButton::Minimize, WindowButton::Maximize],
+            right: Vec::new(),
+        },
+        button_layout_source: "default".to_string(),
+        accent_color: None,
+        accent_source: None,
+    });
+    #[cfg(not(target_os = "macos"))]
+    linux_appearance().await
+}
+
+#[cfg(not(target_os = "macos"))]
+async fn linux_appearance() -> Result<DesktopAppearance, String> {
     let kde = is_kde();
     let (button_layout, button_layout_source) = if kde {
         match kde_layout() {

@@ -403,6 +403,11 @@ pub async fn report() -> HardwareReport {
         gstreamer: tokio::task::spawn_blocking(gst_plugins).await.unwrap_or_default(),
         tips: Vec::new(),
     };
-    report.tips = tips(&report);
+    report.tips = if cfg!(target_os = "macos") {
+        // VA-API, /dev/dri and GStreamer are Linux pieces; macOS decodes through VideoToolbox.
+        vec!["On macOS the built-in player uses the system's hardware video decoding (VideoToolbox) automatically. The VA-API and GStreamer checks above only apply to Linux.".to_string()]
+    } else {
+        tips(&report)
+    };
     report
 }
