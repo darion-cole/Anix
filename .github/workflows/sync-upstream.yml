@@ -3,8 +3,13 @@ name: Sync upstream release
 # Once a day, merges the newest release of the original Anix into the macos branch and starts
 # the macOS build, so the app's Check for updates finds it. Only published upstream releases
 # are merged, not every commit. When the merge needs a person (a conflict with the macOS
-# changes, or upstream changed a workflow file, which this job's token may not push), the run
+# changes, or a release that changes a workflow file when no SYNC_TOKEN is saved), the run
 # fails and opens an issue saying so.
+#
+# SYNC_TOKEN (optional repository secret): a fine-grained token for this repository only, with
+# Contents and Workflows set to read and write. GitHub never lets the job's own token push a
+# change to .github/workflows, so without SYNC_TOKEN such releases need a manual merge. A push
+# made with SYNC_TOKEN also starts the macOS build by itself.
 on:
   schedule:
     - cron: '17 9 * * *'
@@ -22,6 +27,8 @@ concurrency:
 env:
   UPSTREAM: MaidLover69/Anix
   BRANCH: macos
+  # Secrets cannot be tested in `if:` conditions directly.
+  HAS_SYNC_TOKEN: ${{ secrets.SYNC_TOKEN != '' }}
 
 jobs:
   sync:
@@ -34,6 +41,8 @@ jobs:
         with:
           ref: ${{ env.BRANCH }}
           fetch-depth: 0
+          # The merge is pushed with this token; SYNC_TOKEN can also push workflow changes.
+          token: ${{ secrets.SYNC_TOKEN || github.token }}
 
       - name: Find the latest upstream release
         id: upstream
@@ -74,10 +83,11 @@ jobs:
           fi
 
       - name: Start the macOS build
-        if: steps.upstream.outputs.needed == 'true'
+        # A push made with the job's own token does not start other workflows by itself; one
+        # made with SYNC_TOKEN does, so the build is only started here without it.
+        if: steps.upstream.outputs.needed == 'true' && env.HAS_SYNC_TOKEN != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-        # A push made with this job's token does not start other workflows by itself.
         run: gh workflow run macos.yml --ref "${BRANCH}"
 
       - name: Ask for help
@@ -91,7 +101,11 @@ jobs:
           if [ "$PROBLEM" = "conflict" ]; then
             reason="The merge conflicts with the macOS changes in:"$'\n\n'"$(sed 's/^/- `/; s/$/`/' conflicts.txt)"
           elif [ "$PROBLEM" = "push" ]; then
-            reason="The merge worked, but it could not be pushed. Upstream probably changed a file in .github/workflows, which this automatic job is not allowed to push."
+            if [ "$HAS_SYNC_TOKEN" = "true" ]; then
+              reason="The merge worked, but it could not be pushed with SYNC_TOKEN. The token has probably expired or lost its Contents/Workflows permission: make a new one and save it as the SYNC_TOKEN secret again."
+            else
+              reason="The merge worked, but it could not be pushed. Upstream probably changed a file in .github/workflows, which this automatic job may only push with a SYNC_TOKEN secret (see the top of sync-upstream.yml)."
+            fi
           else
             reason="The sync failed; see the run log."
           fi

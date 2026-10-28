@@ -60,8 +60,14 @@ You install the .dmg once. After that, updates arrive like this:
 The app must be in a folder it can write to (Applications is fine for an admin account) and
 must have been opened from there, not straight from the .dmg or Downloads.
 
+**Releases that change workflow files.** GitHub never lets the job's own token push changes
+to `.github/workflows`. With a repository secret named `SYNC_TOKEN` (a fine-grained token for
+this repository only, with **Contents** and **Workflows** set to read and write), the daily job
+pushes those merges too. Without it, such a release needs a manual merge. The token expires;
+when it does, the run fails with a message saying so, and a new token fixes it.
+
 **When a merge needs a person.** If upstream changed code that the macOS changes also touch,
-or changed one of its own workflow files, the daily job cannot finish the merge. Its run fails
+or changed a workflow file with no working `SYNC_TOKEN`, the daily job cannot finish the merge. Its run fails
 (GitHub emails you) and, if Issues are turned on for this fork, it opens an issue. Then ask
 Claude to "merge upstream Anix <version> into the macos branch of darion-cole/Anix and fix the
 conflicts". You can also start the job by hand from the Actions tab (**Sync upstream release ›
