@@ -51,7 +51,7 @@ You install the .dmg once. After that, updates arrive like this:
    `.app.tar.gz`, and `mac-update.json`. Builds are numbered, so a macOS-only fix is offered as
    an update even when the Anix version stays the same (shown as `1.3.0-mac.<build>`).
 3. **In the app**, the check at launch finds the new build and opens the update dialog by
-   itself (once per launch; it waits until you leave the player or close another dialog). You
+   itself, once for each new build (it waits until you leave the player or close another dialog). You
    can also check any time from Settings › Check for updates.
    **Install** downloads it, checks its SHA-256, replaces Anix in its folder and keeps the
    previous version as a hidden `.Anix.app.previous` next to it. **Restart now** opens the
@@ -87,6 +87,7 @@ The changes are small and kept in a few places, so most upstream releases merge 
 - `src-tauri/src/mpris.rs`: MPRIS commands do nothing on macOS.
 - `src-tauri/src/embedded_mpv/mod.rs`: always the web player on macOS.
 - `src-tauri/src/commands/player.rs`: `host_program`, finding mpv/VLC/ffmpeg on macOS.
-- `src-tauri/src/commands/system.rs`: `open` instead of `xdg-open`.
+- `src-tauri/src/commands/player.rs`: `desktop_opener`, `open` instead of `xdg-open` for links,
+  sign-in and folders (used by `open_in_browser` there and by `commands/system.rs`).
 - `src-tauri/src/commands/desktop.rs`: window buttons on the left.
 - `src-tauri/src/system/hwaccel.rs`: a macOS note in the hardware report.

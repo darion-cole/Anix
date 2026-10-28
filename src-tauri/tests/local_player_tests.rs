@@ -346,6 +346,19 @@ fn external_player_gets_the_subtitle_files() {
     assert_eq!(subtitle_file_name(7, 2, None, "vtt"), "anix_sub_7_3_subtitle.vtt");
 }
 
+#[test]
+fn only_web_addresses_are_handed_to_the_browser() {
+    use anix_lib::commands::player::external_url;
+    assert_eq!(
+        external_url(" https://comick.dev/oauth/authorize?a=1&b=two ").as_deref(),
+        Ok("https://comick.dev/oauth/authorize?a=1&b=two")
+    );
+    assert!(external_url("http://127.0.0.1:47823/x").is_ok());
+    for bad in ["file:///etc/passwd", "javascript:alert(1)", "--help", "/usr/bin/true", "mailto:a@b.c", "https://", ""] {
+        assert!(external_url(bad).is_err(), "{bad} must be refused");
+    }
+}
+
 #[cfg(not(target_os = "macos"))]
 #[test]
 fn host_programs_are_run_by_name_outside_macos() {
@@ -360,4 +373,11 @@ fn host_programs_fall_back_to_their_name_when_not_installed() {
     use anix_lib::commands::player::host_program;
     let missing = "anix-no-such-program";
     assert_eq!(host_program(missing), std::path::PathBuf::from(missing));
+}
+
+#[test]
+fn files_and_links_open_with_the_desktops_own_opener() {
+    use anix_lib::commands::player::desktop_opener;
+    let expected = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+    assert_eq!(desktop_opener(), expected);
 }

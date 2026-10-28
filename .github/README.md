@@ -77,7 +77,7 @@ brew install --cask vlc
 ### Updates
 
 You install the `.dmg` once. After that, Anix checks for a new build each time it starts and
-offers it in a dialog (you can also check from **Settings › Check for updates**):
+offers each new build once in a dialog (you can also check from **Settings › Check for updates**):
 **Install** downloads the new build, checks it against its published checksum, replaces Anix
 in place and keeps the previous version as a hidden backup. **Restart now** opens the new
 version. Your library and settings are kept.
