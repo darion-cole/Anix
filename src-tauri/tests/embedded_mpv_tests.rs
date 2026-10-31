@@ -227,12 +227,29 @@ fn anime4k_presets_build_the_documented_chains() {
     assert!(shader_list(Path::new("/a:b"), Anime4k::AHq).is_err());
     // Every file a preset names is bundled.
     let bundled = Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/anime4k");
-    for preset in [Anime4k::AFast, Anime4k::BFast, Anime4k::CFast, Anime4k::AHq, Anime4k::BHq, Anime4k::CHq] {
+    for preset in [
+        Anime4k::AFast,
+        Anime4k::BFast,
+        Anime4k::CFast,
+        Anime4k::AHq,
+        Anime4k::BHq,
+        Anime4k::CHq,
+        Anime4k::ABalanced,
+        Anime4k::BBalanced,
+        Anime4k::CBalanced,
+    ] {
         for name in anime4k_files(preset) {
             assert!(bundled.join(format!("Anime4K_{name}.glsl")).is_file(), "{name} is missing");
         }
     }
     assert!(serde_json::from_str::<Action>(r#"{"action":"set_shaders","preset":"b_hq"}"#).is_ok());
+    // Balanced: the HQ first stage with the fast later stages.
+    assert_eq!(
+        anime4k_files(Anime4k::ABalanced),
+        ["Clamp_Highlights", "Restore_CNN_VL", "Upscale_CNN_x2_M", "AutoDownscalePre_x2", "AutoDownscalePre_x4", "Upscale_CNN_x2_S"]
+    );
+    assert_eq!(anime4k_files(Anime4k::CBalanced)[1], "Upscale_Denoise_CNN_x2_M");
+    assert!(serde_json::from_str::<Action>(r#"{"action":"set_shaders","preset":"a_balanced"}"#).is_ok());
 }
 
 #[test]

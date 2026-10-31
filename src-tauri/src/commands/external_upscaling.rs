@@ -16,7 +16,7 @@ use std::sync::Mutex;
 /// The upscaling the page last reported; `None` until it does, which means off.
 static PRESET: Mutex<Option<Anime4k>> = Mutex::new(None);
 
-/// Reads a preset as the page writes it (`off`, `a_fast` … `c_hq`). Anything else is `None`.
+/// Reads a preset as the page writes it (`off`, `a_fast` … `c_hq`, `a_balanced` …). Anything else is `None`.
 pub fn parse_preset(preset: &str) -> Option<Anime4k> {
     serde_json::from_value(serde_json::Value::String(preset.trim().to_string())).ok()
 }

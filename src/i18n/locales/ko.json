@@ -1023,6 +1023,7 @@
   "playerSettingsPanel.cropHint": "화면을 채우고 맞지 않는 가장자리를 잘라요.",
   "playerSettingsPanel.dialogueBoost": "대사 강조",
   "playerSettingsPanel.dialogueBoostHint": "큰 효과음과 작은 대사 소리를 고르게 맞춰요 (야간 모드).",
+  "playerSettingsPanel.balanced": "균형",
   "playerSettingsPanel.fast": "빠름",
   "playerSettingsPanel.fill": "채우기",
   "playerSettingsPanel.fillHint": "화면에 맞게 영상을 늘려요.",

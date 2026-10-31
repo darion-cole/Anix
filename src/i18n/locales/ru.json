@@ -1134,6 +1134,7 @@
   "playerSettingsPanel.cropHint": "Заполняет экран и обрезает края, которые не помещаются.",
   "playerSettingsPanel.dialogueBoost": "Усиление диалогов",
   "playerSettingsPanel.dialogueBoostHint": "Выравнивает громкие эффекты и тихую речь (ночной режим).",
+  "playerSettingsPanel.balanced": "Сбалансированно",
   "playerSettingsPanel.fast": "Быстро",
   "playerSettingsPanel.fill": "Растянуть",
   "playerSettingsPanel.fillHint": "Растягивает картинку на весь экран.",

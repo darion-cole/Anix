@@ -306,10 +306,16 @@ pub enum Anime4k {
     AHq,
     BHq,
     CHq,
+    ABalanced,
+    BBalanced,
+    CBalanced,
 }
 
 /// The shader chain of a preset, in order, as the Anime4K project documents its modes
-/// (fast: for most GPUs; HQ: for strong GPUs). Files are in `resources/anime4k`.
+/// (fast: for most GPUs; HQ: for strong GPUs). Balanced, between the two, keeps the HQ first
+/// stage (restore, or C's denoise upscale) and takes the lighter later stages from fast, which
+/// is where HQ spends most of its work (the second-stage upscale runs at twice the size).
+/// Files are in `resources/anime4k`.
 pub fn anime4k_files(preset: Anime4k) -> Vec<&'static str> {
     let (restore, upscale, last) = match preset {
         Anime4k::Off => return Vec::new(),
@@ -319,6 +325,9 @@ pub fn anime4k_files(preset: Anime4k) -> Vec<&'static str> {
         Anime4k::AHq => (Some("Restore_CNN_VL"), "Upscale_CNN_x2_VL", "Upscale_CNN_x2_M"),
         Anime4k::BHq => (Some("Restore_CNN_Soft_VL"), "Upscale_CNN_x2_VL", "Upscale_CNN_x2_M"),
         Anime4k::CHq => (None, "Upscale_Denoise_CNN_x2_VL", "Upscale_CNN_x2_M"),
+        Anime4k::ABalanced => (Some("Restore_CNN_VL"), "Upscale_CNN_x2_M", "Upscale_CNN_x2_S"),
+        Anime4k::BBalanced => (Some("Restore_CNN_Soft_VL"), "Upscale_CNN_x2_M", "Upscale_CNN_x2_S"),
+        Anime4k::CBalanced => (None, "Upscale_Denoise_CNN_x2_M", "Upscale_CNN_x2_M"),
     };
     let mut files = vec!["Clamp_Highlights"];
     files.extend(restore);

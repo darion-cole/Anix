@@ -1060,6 +1060,7 @@
   "playerSettingsPanel.cropHint": "स्क्रीन भरता है और जो किनारे फ़िट नहीं होते, उन्हें काट देता है।",
   "playerSettingsPanel.dialogueBoost": "डायलॉग बूस्ट",
   "playerSettingsPanel.dialogueBoostHint": "तेज़ इफ़ेक्ट और धीमी आवाज़ में बोले गए संवाद को बराबर करता है (नाइट मोड)।",
+  "playerSettingsPanel.balanced": "संतुलित",
   "playerSettingsPanel.fast": "तेज़",
   "playerSettingsPanel.fill": "भरें",
   "playerSettingsPanel.fillHint": "तस्वीर को स्क्रीन जितना खींच देता है।",

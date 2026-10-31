@@ -1097,6 +1097,7 @@
   "playerSettingsPanel.cropHint": "Remplit l’écran et coupe les bords qui dépassent.",
   "playerSettingsPanel.dialogueBoost": "Dialogues renforcés",
   "playerSettingsPanel.dialogueBoostHint": "Équilibre les effets forts et les voix faibles (mode nuit).",
+  "playerSettingsPanel.balanced": "Équilibré",
   "playerSettingsPanel.fast": "Rapide",
   "playerSettingsPanel.fill": "Étirer",
   "playerSettingsPanel.fillHint": "Étire l’image à la taille de l’écran.",

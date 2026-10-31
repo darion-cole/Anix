@@ -1097,6 +1097,7 @@
   "playerSettingsPanel.cropHint": "Preenche a tela e corta as bordas que não cabem.",
   "playerSettingsPanel.dialogueBoost": "Realce de diálogos",
   "playerSettingsPanel.dialogueBoostHint": "Equilibra efeitos altos e falas baixas (modo noturno).",
+  "playerSettingsPanel.balanced": "Equilibrado",
   "playerSettingsPanel.fast": "Rápido",
   "playerSettingsPanel.fill": "Esticar",
   "playerSettingsPanel.fillHint": "Estica a imagem até a tela.",

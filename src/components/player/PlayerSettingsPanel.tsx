@@ -179,6 +179,7 @@ export const PlayerSettingsPanel: React.FC<PlayerSettingsPanelProps> = ({
               onChange={(quality) => setAnime4k(anime4kPreset(upscale.mode === 'off' ? 'a' : upscale.mode, quality) as Anime4kPreset)}
               options={[
                 { value: 'fast', label: t('playerSettingsPanel.fast') },
+                { value: 'balanced', label: t('playerSettingsPanel.balanced') },
                 { value: 'hq', label: t('playerSettingsPanel.hq') },
               ]}
             />

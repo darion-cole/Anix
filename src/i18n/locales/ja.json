@@ -1023,6 +1023,7 @@
   "playerSettingsPanel.cropHint": "画面いっぱいに表示し、はみ出た端を切り取ります。",
   "playerSettingsPanel.dialogueBoost": "セリフ強調",
   "playerSettingsPanel.dialogueBoostHint": "大きな効果音と小さなセリフの差をならします（ナイトモード）。",
+  "playerSettingsPanel.balanced": "バランス",
   "playerSettingsPanel.fast": "高速",
   "playerSettingsPanel.fill": "引き伸ばし",
   "playerSettingsPanel.fillHint": "映像を画面に合わせて引き伸ばします。",

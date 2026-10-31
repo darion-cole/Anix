@@ -1060,6 +1060,7 @@
   "playerSettingsPanel.cropHint": "Fills the screen and cuts off the edges that do not fit.",
   "playerSettingsPanel.dialogueBoost": "Dialogue boost",
   "playerSettingsPanel.dialogueBoostHint": "Evens out loud effects and quiet speech (night mode).",
+  "playerSettingsPanel.balanced": "Balanced",
   "playerSettingsPanel.fast": "Fast",
   "playerSettingsPanel.fill": "Fill",
   "playerSettingsPanel.fillHint": "Stretches the picture to the screen.",

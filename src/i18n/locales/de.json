@@ -1060,6 +1060,7 @@
   "playerSettingsPanel.cropHint": "Füllt den Bildschirm und schneidet überstehende Ränder ab.",
   "playerSettingsPanel.dialogueBoost": "Dialoge verstärken",
   "playerSettingsPanel.dialogueBoostHint": "Gleicht laute Effekte und leise Sprache aus (Nachtmodus).",
+  "playerSettingsPanel.balanced": "Ausgewogen",
   "playerSettingsPanel.fast": "Schnell",
   "playerSettingsPanel.fill": "Füllen",
   "playerSettingsPanel.fillHint": "Streckt das Bild auf den Bildschirm.",

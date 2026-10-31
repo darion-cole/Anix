@@ -1023,6 +1023,7 @@
   "playerSettingsPanel.cropHint": "填满屏幕，并裁掉放不下的边缘。",
   "playerSettingsPanel.dialogueBoost": "对白增强",
   "playerSettingsPanel.dialogueBoostHint": "平衡响亮的音效和轻声的对白（夜间模式）。",
+  "playerSettingsPanel.balanced": "均衡",
   "playerSettingsPanel.fast": "快速",
   "playerSettingsPanel.fill": "拉伸",
   "playerSettingsPanel.fillHint": "将画面拉伸至铺满屏幕。",

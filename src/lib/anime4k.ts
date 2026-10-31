@@ -1,12 +1,34 @@
 import type { TKey } from '../i18n';
 
 /** Anime4K upscaling presets of the embedded mpv engine (shaders bundled, MIT, by bloc97). */
-export type Anime4kPreset = 'off' | 'a_fast' | 'b_fast' | 'c_fast' | 'a_hq' | 'b_hq' | 'c_hq';
+export type Anime4kPreset =
+  | 'off'
+  | 'a_fast'
+  | 'b_fast'
+  | 'c_fast'
+  | 'a_balanced'
+  | 'b_balanced'
+  | 'c_balanced'
+  | 'a_hq'
+  | 'b_hq'
+  | 'c_hq';
 
-export const ANIME4K_PRESETS: readonly Anime4kPreset[] = ['off', 'a_fast', 'b_fast', 'c_fast', 'a_hq', 'b_hq', 'c_hq'];
+export const ANIME4K_PRESETS: readonly Anime4kPreset[] = [
+  'off',
+  'a_fast',
+  'b_fast',
+  'c_fast',
+  'a_balanced',
+  'b_balanced',
+  'c_balanced',
+  'a_hq',
+  'b_hq',
+  'c_hq',
+];
 
 export type Anime4kMode = 'off' | 'a' | 'b' | 'c';
-export type Anime4kQuality = 'fast' | 'hq';
+/** Balanced keeps HQ's first stage and fast's later ones: most of HQ's look at about half the work. */
+export type Anime4kQuality = 'fast' | 'balanced' | 'hq';
 
 // `label` is the mode's letter; 'Off' is shown through `common.off`.
 export const ANIME4K_MODES: { value: Anime4kMode; label: string; hintKey: TKey }[] = [

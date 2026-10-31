@@ -1208,6 +1208,7 @@
   "playerSettingsPanel.cropHint": "يملأ الشاشة ويقص الحواف التي لا تتسع.",
   "playerSettingsPanel.dialogueBoost": "تعزيز الحوار",
   "playerSettingsPanel.dialogueBoostHint": "يوازن بين المؤثرات العالية والكلام الخافت (الوضع الليلي).",
+  "playerSettingsPanel.balanced": "متوازن",
   "playerSettingsPanel.fast": "سريع",
   "playerSettingsPanel.fill": "ملء",
   "playerSettingsPanel.fillHint": "يمطّ الصورة لتملأ الشاشة.",
