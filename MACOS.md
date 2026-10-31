@@ -34,6 +34,7 @@ brew install --cask vlc
 | Video player | The built-in web player only. The embedded mpv player is Linux-only (it draws through GTK). |
 | Local `.mkv` files | macOS's web view cannot play MKV. Use **Open in mpv/VLC** for those. MP4 and streams play in the app. |
 | External mpv / VLC | Works. Anix finds Homebrew programs and `VLC.app` even when started from the Dock. |
+| Anime4K upscaling | Applies in external mpv: choose it in the player's settings (Upscaling), then open the episode in mpv. |
 | Media keys / lock screen controls | Not available (Linux MPRIS). |
 | Release notifications | Shown, but clicking one does not open the anime. |
 | "Alerts while Anix is closed" | Not functional on macOS (it uses Linux login services). |
@@ -97,5 +98,9 @@ The changes are small and kept in a few places, so most upstream releases merge 
   sign-in and folders (used by `open_in_browser` there and by `commands/system.rs`).
 - `src-tauri/src/commands/desktop.rs`: window buttons on the left.
 - `src-tauri/src/system/hwaccel.rs`: a macOS note in the hardware report.
+- `src-tauri/src/commands/external_upscaling.rs` (new), one line in `sanitized_command`, one
+  entry in `lib.rs`, `src/hooks/useExternalUpscaling.ts`, `src/lib/platform.ts` and the Upscaling
+  section of `PlayerSettingsPanel.tsx` (`playerSettingsPanel.macMpvUpscaling` in every locale):
+  Anime4K for external mpv.
 - `src-tauri/src/system/mod.rs`: `on_ui_main_thread`, the macOS main-thread check used by `restart`
   (upstream asks GTK, which macOS does not have).

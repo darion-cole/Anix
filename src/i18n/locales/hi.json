@@ -1066,6 +1066,7 @@
   "playerSettingsPanel.fit": "फ़िट",
   "playerSettingsPanel.fitHint": "पूरी तस्वीर, आकार अलग होने पर किनारों पर पट्टियों के साथ।",
   "playerSettingsPanel.hq": "HQ (दमदार GPU)",
+  "playerSettingsPanel.macMpvUpscaling": "macOS पर यह अपस्केलिंग तब लागू होती है जब आप एपिसोड को mpv में खोलते हैं (Homebrew से इंस्टॉल करें: brew install mpv)।",
   "playerSettingsPanel.mpvOnly": "एम्बेडेड mpv प्लेयर के साथ उपलब्ध (सेटिंग्स › प्लेबैक)।",
   "playerSettingsPanel.playback": "प्लेबैक",
   "playerSettingsPanel.playbackSpeed": "प्लेबैक स्पीड",

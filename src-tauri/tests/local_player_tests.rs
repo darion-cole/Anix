@@ -397,3 +397,30 @@ fn files_and_links_open_with_the_desktops_own_opener() {
     let expected = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
     assert_eq!(desktop_opener(), expected);
 }
+
+#[test]
+fn external_mpv_gets_the_bundled_anime4k_shaders_for_the_chosen_preset() {
+    use anix_lib::commands::external_upscaling::{bundled_shader_dir, mpv_shader_arg, parse_preset};
+    use anix_lib::embedded_mpv::policy::Anime4k;
+    let shaders = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/anime4k");
+
+    let arg = mpv_shader_arg(&shaders, parse_preset("a_fast").unwrap()).expect("shaders are bundled");
+    assert!(arg.starts_with("--glsl-shaders="), "{arg}");
+    assert!(arg.contains("Anime4K_Restore_CNN_M.glsl") && arg.contains("Anime4K_Upscale_CNN_x2_S.glsl"), "{arg}");
+    assert!(mpv_shader_arg(&shaders, parse_preset("c_hq").unwrap()).unwrap().contains("Anime4K_Upscale_Denoise_CNN_x2_VL.glsl"));
+
+    // Off, an unknown preset, or a folder without the shaders: mpv starts without upscaling.
+    assert_eq!(mpv_shader_arg(&shaders, Anime4k::Off), None);
+    assert_eq!(parse_preset("off"), Some(Anime4k::Off));
+    for bad in ["", "d_fast", "a_ultra", "--glsl-shaders=/tmp/x.glsl", "A_FAST"] {
+        assert_eq!(parse_preset(bad), None, "{bad:?}");
+    }
+    assert_eq!(mpv_shader_arg(std::path::Path::new("/no/such/folder"), Anime4k::AFast), None);
+
+    // Inside a macOS app bundle, the shaders sit under Contents/Resources.
+    assert_eq!(
+        bundled_shader_dir(std::path::Path::new("/Applications/Anix.app/Contents/MacOS/anix")),
+        Some(std::path::PathBuf::from("/Applications/Anix.app/Contents/Resources/resources/anime4k"))
+    );
+    assert_eq!(bundled_shader_dir(std::path::Path::new("/usr/bin/anix")), None);
+}

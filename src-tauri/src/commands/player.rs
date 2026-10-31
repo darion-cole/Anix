@@ -104,6 +104,10 @@ pub fn sanitized_command(program: &str) -> Command {
     let mut cmd = Command::new(host_program(program));
     #[cfg(target_os = "macos")]
     cmd.env("PATH", macos_search_path());
+    // macOS has no embedded mpv, so the chosen Anime4K upscaling goes to external mpv instead.
+    if program == "mpv" {
+        cmd.args(crate::commands::external_upscaling::current_mpv_shader_arg());
+    }
 
     if let Ok(appdir) = std::env::var("APPDIR") {
         if !appdir.is_empty() {

@@ -1103,6 +1103,7 @@
   "playerSettingsPanel.fit": "Ajuster",
   "playerSettingsPanel.fitHint": "L’image entière, avec des bandes si les formats diffèrent.",
   "playerSettingsPanel.hq": "HQ (GPU puissant)",
+  "playerSettingsPanel.macMpvUpscaling": "Sur macOS, ce suréchantillonnage s’applique quand vous ouvrez l’épisode dans mpv (installez-le avec Homebrew : brew install mpv).",
   "playerSettingsPanel.mpvOnly": "Disponible avec le lecteur mpv intégré (Paramètres › Lecture).",
   "playerSettingsPanel.playback": "Lecture",
   "playerSettingsPanel.playbackSpeed": "Vitesse de lecture",

@@ -1029,6 +1029,7 @@
   "playerSettingsPanel.fit": "全体表示",
   "playerSettingsPanel.fitHint": "映像全体を表示し、縦横比が違う部分には黒帯が入ります。",
   "playerSettingsPanel.hq": "高画質（高性能 GPU）",
+  "playerSettingsPanel.macMpvUpscaling": "macOS では、このアップスケーリングはエピソードを mpv で開いたときに適用されます（Homebrew でインストール: brew install mpv）。",
   "playerSettingsPanel.mpvOnly": "内蔵 mpv プレーヤーで利用できます（設定 › 再生）。",
   "playerSettingsPanel.playback": "再生",
   "playerSettingsPanel.playbackSpeed": "再生速度",

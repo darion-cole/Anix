@@ -4,6 +4,7 @@ pub mod auth;
 pub mod backup;
 pub mod desktop;
 pub mod downloads;
+pub mod external_upscaling;
 pub mod library;
 pub mod local_library;
 pub mod local_media;

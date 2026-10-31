@@ -229,6 +229,7 @@ pub fn run() {
             commands::read_subtitle_file,
             mpris::mpris_update,
             mpris::mpris_clear,
+            commands::external_upscaling::set_external_upscaling,
             // AnimeThemes & Local Media
             commands::fetch_anime_themes,
             commands::scan_local_anime_directory,

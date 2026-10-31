@@ -1103,6 +1103,7 @@
   "playerSettingsPanel.fit": "Ajustar",
   "playerSettingsPanel.fitHint": "A imagem inteira, com barras onde os formatos diferem.",
   "playerSettingsPanel.hq": "HQ (GPU forte)",
+  "playerSettingsPanel.macMpvUpscaling": "No macOS, esse upscaling é aplicado quando você abre o episódio no mpv (instale com o Homebrew: brew install mpv).",
   "playerSettingsPanel.mpvOnly": "Disponível com o player mpv integrado (Configurações › Reprodução).",
   "playerSettingsPanel.playback": "Reprodução",
   "playerSettingsPanel.playbackSpeed": "Velocidade de reprodução",

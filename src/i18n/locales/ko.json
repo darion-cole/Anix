@@ -1029,6 +1029,7 @@
   "playerSettingsPanel.fit": "맞추기",
   "playerSettingsPanel.fitHint": "영상 전체를 보여 주고, 비율이 다르면 여백을 둬요.",
   "playerSettingsPanel.hq": "고품질 (고성능 GPU)",
+  "playerSettingsPanel.macMpvUpscaling": "macOS에서는 에피소드를 mpv로 열 때 이 업스케일링이 적용돼요 (Homebrew로 설치: brew install mpv).",
   "playerSettingsPanel.mpvOnly": "내장 mpv 플레이어에서 쓸 수 있어요 (설정 › 재생).",
   "playerSettingsPanel.playback": "재생",
   "playerSettingsPanel.playbackSpeed": "재생 속도",

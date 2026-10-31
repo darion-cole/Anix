@@ -1029,6 +1029,7 @@
   "playerSettingsPanel.fit": "适应",
   "playerSettingsPanel.fitHint": "显示完整画面，比例不同时会留黑边。",
   "playerSettingsPanel.hq": "高画质（需强劲 GPU）",
+  "playerSettingsPanel.macMpvUpscaling": "在 macOS 上，在 mpv 中打开剧集时会应用此超分辨率（用 Homebrew 安装：brew install mpv）。",
   "playerSettingsPanel.mpvOnly": "使用内嵌 mpv 播放器时可用（设置 › 播放）。",
   "playerSettingsPanel.playback": "播放",
   "playerSettingsPanel.playbackSpeed": "播放速度",

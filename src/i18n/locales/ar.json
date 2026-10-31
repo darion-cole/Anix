@@ -1214,6 +1214,7 @@
   "playerSettingsPanel.fit": "احتواء",
   "playerSettingsPanel.fitHint": "الصورة كاملة، مع أشرطة حيث تختلف الأبعاد.",
   "playerSettingsPanel.hq": "جودة عالية (GPU قوي)",
+  "playerSettingsPanel.macMpvUpscaling": "على macOS يُطبَّق هذا التحسين عند فتح الحلقة في mpv (ثبّته عبر Homebrew: brew install mpv).",
   "playerSettingsPanel.mpvOnly": "متاح مع مشغّل mpv المدمج (الإعدادات › التشغيل).",
   "playerSettingsPanel.playback": "التشغيل",
   "playerSettingsPanel.playbackSpeed": "سرعة التشغيل",

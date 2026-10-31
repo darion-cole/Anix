@@ -7,6 +7,7 @@ import type { ScreenFit } from './playerLogic';
 import { MAX_SPEED } from './playerLogic';
 import { useSaveSettings, useSettings } from '../../hooks/useSettings';
 import { ANIME4K_MODES, anime4kParts, anime4kPreset } from '../../lib/anime4k';
+import { isMacOS } from '../../lib/platform';
 import type { Anime4kPreset, Anime4kQuality } from '../../lib/anime4k';
 import { usePlayerStore } from '../../stores/playerStore';
 import type { AppSettings } from '../../types';
@@ -161,7 +162,8 @@ export const PlayerSettingsPanel: React.FC<PlayerSettingsPanelProps> = ({
       </PanelSection>
 
       <PanelSection title={t('playerSettingsPanel.upscaling')}>
-        {engine === 'mpv' ? (
+        {/* macOS has no embedded mpv: the choice applies when the episode is opened in mpv. */}
+        {engine === 'mpv' || isMacOS() ? (
           <>
             <SegmentedControl
               size="sm"
@@ -181,6 +183,7 @@ export const PlayerSettingsPanel: React.FC<PlayerSettingsPanelProps> = ({
               ]}
             />
             <p className="text-xs text-text-muted">{t(ANIME4K_MODES.find((m) => m.value === upscale.mode)?.hintKey ?? 'anime4k.offHint')}</p>
+            {engine !== 'mpv' && <p className="text-xs text-text-muted">{t('playerSettingsPanel.macMpvUpscaling')}</p>}
           </>
         ) : (
           <p className="text-xs text-text-muted">{t('playerSettingsPanel.mpvOnly')}</p>

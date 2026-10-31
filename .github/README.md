@@ -92,6 +92,7 @@ for macOS.
 | Feature | On macOS |
 |---|---|
 | Video player | The built-in web player. The embedded mpv player is Linux-only. |
+| Anime4K upscaling | Works in mpv: pick a mode in the player's settings, then open the episode in mpv. |
 | Local `.mkv` files | Open them in mpv or VLC; macOS's web view cannot play MKV. MP4 and streams play in the app. |
 | Media keys / lock-screen controls | Not available yet. |
 | Clicking a release notification | Shows the notification, but does not open the anime. |

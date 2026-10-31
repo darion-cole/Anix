@@ -1140,6 +1140,7 @@
   "playerSettingsPanel.fit": "Вписать",
   "playerSettingsPanel.fitHint": "Картинка целиком, с полосами, если пропорции не совпадают.",
   "playerSettingsPanel.hq": "HQ (мощный GPU)",
+  "playerSettingsPanel.macMpvUpscaling": "В macOS это масштабирование применяется, когда вы открываете серию в mpv (установите его через Homebrew: brew install mpv).",
   "playerSettingsPanel.mpvOnly": "Доступно со встроенным плеером mpv (Настройки › Воспроизведение).",
   "playerSettingsPanel.playback": "Воспроизведение",
   "playerSettingsPanel.playbackSpeed": "Скорость воспроизведения",
