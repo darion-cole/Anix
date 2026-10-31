@@ -203,14 +203,14 @@ fn cache_settings_map_to_mpv_options() {
     let defaults = cache_options(&json!({}), dir);
     assert!(defaults.contains(&("demuxer-max-bytes", "150MiB".to_string())));
     assert!(defaults.contains(&("cache-on-disk", "no".to_string())));
-    assert!(!defaults.iter().any(|(k, _)| *k == "cache-dir"));
+    assert!(!defaults.iter().any(|(k, _)| *k == "demuxer-cache-dir"));
     let disk = cache_options(
         &json!({"player_buffer_mb": 64, "player_readahead_secs": 9999, "player_disk_cache": true, "player_disk_cache_mb": 2048}),
         dir,
     );
     assert!(disk.contains(&("demuxer-max-bytes", "2048MiB".to_string())));
     assert!(disk.contains(&("demuxer-readahead-secs", "600".to_string())));
-    assert!(disk.contains(&("cache-dir", "/var/cache/anix/video-cache".to_string())));
+    assert!(disk.contains(&("demuxer-cache-dir", "/var/cache/anix/video-cache".to_string())));
 }
 
 #[test]

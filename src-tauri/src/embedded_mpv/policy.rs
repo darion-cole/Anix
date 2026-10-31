@@ -288,7 +288,8 @@ pub fn cache_options(settings: &Value, cache_dir: &Path) -> Vec<(&'static str, S
         ("cache-on-disk", if disk { "yes" } else { "no" }.to_string()),
     ];
     if disk {
-        options.push(("cache-dir", cache_dir.to_string_lossy().into_owned()));
+        // mpv 0.36 renamed `cache-dir` to `demuxer-cache-dir`; 0.41 no longer takes the old name.
+        options.push(("demuxer-cache-dir", cache_dir.to_string_lossy().into_owned()));
     }
     options
 }
