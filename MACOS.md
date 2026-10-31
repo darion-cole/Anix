@@ -6,8 +6,8 @@ macOS live on the `macos` branch, and `main` stays an unchanged copy of upstream
 ## Installing
 
 1. Open the **Releases** page of this fork and download the `.dmg` from the newest
-   "for macOS" release. It runs on both Apple Silicon and Intel Macs
-   (macOS 11 or later).
+   "for macOS" release. It runs on Apple Silicon Macs (M1 or later,
+   macOS 11 or later). Intel Macs are not supported.
 2. Open the .dmg and drag **Anix** into **Applications**.
 3. The app is not notarized by Apple, so the first launch is blocked ("Apple could not
    verify Anix…"). Click **Done**, then go to **System Settings › Privacy & Security**, scroll

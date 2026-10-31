@@ -6,7 +6,7 @@
 
 ### An unofficial macOS port of Anix, the anime catalogue, tracker and local library player
 
-[![Platform](https://img.shields.io/badge/Platform-macOS%2011%2B%20(Apple%20Silicon%20%7C%20Intel)-000000?logo=apple&logoColor=white)](https://github.com/darion-cole/Anix/releases/latest)
+[![Platform](https://img.shields.io/badge/Platform-macOS%2011%2B%20(Apple%20Silicon)-000000?logo=apple&logoColor=white)](https://github.com/darion-cole/Anix/releases/latest)
 [![Upstream](https://img.shields.io/badge/Upstream-MaidLover69%2FAnix-7c3aed?logo=github)](https://github.com/MaidLover69/Anix)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](../LICENSE)
 
@@ -53,7 +53,7 @@ Screenshots are from the original project.
 
 ## Install on macOS
 
-Works on macOS 11 (Big Sur) or later, on both Apple Silicon and Intel Macs.
+Works on macOS 11 (Big Sur) or later, on Apple Silicon Macs (M1 or later). Intel Macs are not supported.
 
 1. Download the `.dmg` from the [latest release](https://github.com/darion-cole/Anix/releases/latest).
 2. Open it and drag **Anix** into **Applications**.

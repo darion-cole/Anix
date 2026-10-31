@@ -1,6 +1,6 @@
 name: macOS build
 
-# Builds a universal (Apple Silicon + Intel) Anix from the macos branch and publishes it as the
+# Builds an Apple Silicon (arm64) Anix from the macos branch and publishes it as the
 # fork's latest release: the .dmg for a first install, plus the app as .app.tar.gz and
 # mac-update.json, which the app's Settings › Check for updates reads to update itself in place.
 # The backend tests can run on macOS first (RUN_MAC_TESTS below); a failure stops the release.
@@ -50,7 +50,7 @@ jobs:
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-apple-darwin,x86_64-apple-darwin
+          targets: aarch64-apple-darwin
 
       - name: Cache Cargo dependencies
         uses: actions/cache@v4
@@ -75,12 +75,12 @@ jobs:
         if: env.RUN_MAC_TESTS == 'true'
         run: cargo test --manifest-path src-tauri/Cargo.toml
 
-      - name: Build universal app
+      - name: Build Apple Silicon app
         env:
           # Read at compile time by src-tauri/src/clients/mac_update.rs.
           ANIX_MAC_UPDATE_REPO: ${{ github.repository }}
           ANIX_MAC_BUILD: ${{ github.run_number }}
-        run: npx --no-install tauri build --target universal-apple-darwin
+        run: npx --no-install tauri build --target aarch64-apple-darwin
 
       - name: Package the release files
         id: pkg
@@ -91,10 +91,10 @@ jobs:
           set -euo pipefail
           version=$(node -p "require('./package.json').version")
           tag="mac-v${version}-b${BUILD}"
-          bundle_dir=src-tauri/target/universal-apple-darwin/release/bundle
+          bundle_dir=src-tauri/target/aarch64-apple-darwin/release/bundle
           app=$(ls -d "$bundle_dir"/macos/*.app | head -n1)
 
-          dmg="Anix_${version}_b${BUILD}_macOS_universal.dmg"
+          dmg="Anix_${version}_b${BUILD}_macOS_apple_silicon.dmg"
           cp "$(ls "$bundle_dir"/dmg/*.dmg | head -n1)" "$dmg"
 
           archive="Anix_${version}_b${BUILD}_macOS.app.tar.gz"
