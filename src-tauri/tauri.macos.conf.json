@@ -15,5 +15,8 @@
       "icons/128x128@2x.png",
       "icons/macos/icon.icns"
     ]
+  },
+  "app": {
+    "macOSPrivateApi": true
   }
 }

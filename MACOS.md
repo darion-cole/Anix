@@ -82,6 +82,8 @@ To roll back an update, quit Anix, delete `Anix.app` from Applications and renam
 The changes are small and kept in a few places, so most upstream releases merge without conflicts:
 
 - `src-tauri/tauri.macos.conf.json`, `src-tauri/Info.plist`: bundle settings.
+  `app.macOSPrivateApi` turns on WebKit's element fullscreen (the player's fullscreen button);
+  the Tauri CLI adds the matching `macos-private-api` feature to `Cargo.toml` while it builds.
 - `src-tauri/icons/macos/icon.icns`: a real macOS icon (the shared `icons/icon.icns` is a PNG
   with the wrong extension, which macOS shows as a blank grey icon).
 - `.github/workflows/macos.yml`: the build and release, with the update files.
