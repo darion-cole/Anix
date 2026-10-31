@@ -133,6 +133,17 @@ pub fn sanitized_command(program: &str) -> Command {
     cmd
 }
 
+/// Starts `cmd` and waits for it on a thread, so a player or helper the user closes is reaped
+/// instead of staying behind as a zombie process until Anix quits. Returns the process id.
+/// Stdin is closed so a player started from a terminal never reads keys from Anix's terminal
+/// (mpv's --input-terminal); stdout and stderr stay inherited for debugging.
+pub fn spawn_reaped(cmd: &mut Command) -> std::io::Result<u32> {
+    let mut child = cmd.stdin(std::process::Stdio::null()).spawn()?;
+    let pid = child.id();
+    std::thread::spawn(move || child.wait());
+    Ok(pid)
+}
+
 /// The web address to hand to the browser: only absolute `http`/`https` addresses, in the
 /// form the `url` crate writes them, so nothing else ever reaches `xdg-open`.
 pub fn external_url(url: &str) -> Result<String, String> {
@@ -159,18 +170,14 @@ pub fn desktop_opener() -> &'static str {
 /// GTK, GIO and GStreamer paths and may fail to start or never hand a sign-in back.
 pub fn open_in_browser(url: &str) -> Result<(), String> {
     let url = external_url(url)?;
-    let mut child = sanitized_command(desktop_opener())
-        .arg(&url)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .map_err(|e| format!("Could not open the browser: {}", e))?;
-    // Reap it; the opener hands the address to the browser and exits.
-    std::thread::spawn(move || {
-        let _ = child.wait();
-    });
-    Ok(())
+    spawn_reaped(
+        sanitized_command(desktop_opener())
+            .arg(&url)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null()),
+    )
+    .map(drop)
+    .map_err(|e| format!("Could not open the browser: {}", e))
 }
 
 /// The UI's "open in browser" links (see `useOpenExternal.ts`).
@@ -317,25 +324,33 @@ fn remove_stale_subtitle_files(dir: &Path) {
 
 /// Downloads the stream's subtitles to temporary files, in the given order. A subtitle
 /// that cannot be fetched or is not a subtitle file is left out.
-async fn fetch_subtitle_files(subtitles: &[ExternalSubtitle], referer: Option<&str>) -> Vec<std::path::PathBuf> {
+pub async fn fetch_subtitle_files(subtitles: &[ExternalSubtitle], referer: Option<&str>) -> Vec<std::path::PathBuf> {
     let dir = crate::commands::playlists::playlist_dir();
     remove_stale_subtitle_files(&dir);
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or_default();
-    let client = crate::clients::http::download_client();
+    // Subtitle links come from extensions: public hosts only.
+    let Ok(client) = crate::clients::net_guard::public_download_client() else {
+        return Vec::new();
+    };
 
     let mut tasks = tokio::task::JoinSet::new();
     for (index, sub) in subtitles.iter().take(MAX_EXTERNAL_SUBTITLES).enumerate() {
         let (client, dir, sub, referer) = (client.clone(), dir.clone(), sub.clone(), referer.map(str::to_string));
         tasks.spawn(async move {
-            let url = validate_media_url(&sub.url).ok()?;
-            let mut request = client.get(&url).timeout(std::time::Duration::from_secs(20));
-            if let Some(r) = referer {
-                request = request.header("Referer", r);
-            }
-            let body = request.send().await.ok()?.error_for_status().ok()?.bytes().await.ok()?;
+            let body = if let Some(local) = crate::stream_proxy::local_subtitle_path(&sub.url) {
+                tokio::fs::read(local).await.ok()?.into()
+            } else {
+                let url = validate_media_url(&sub.url).ok()?;
+                crate::clients::net_guard::check_public_url(&url::Url::parse(&url).ok()?).ok()?;
+                let mut request = client.get(&url).timeout(std::time::Duration::from_secs(20));
+                if let Some(r) = referer {
+                    request = request.header("Referer", r);
+                }
+                request.send().await.ok()?.error_for_status().ok()?.bytes().await.ok()?
+            };
             let format = crate::downloads::detect_subtitle_format(&body)?;
             let path = dir.join(subtitle_file_name(nonce, index, sub.language.as_deref(), format.extension()));
             tokio::fs::write(&path, &body).await.ok()?;
@@ -420,7 +435,7 @@ pub async fn launch_stream_player(
     cmd.args(args);
 
     let (Some(socket), Some((app, episode))) = (socket, sync) else {
-        return match cmd.spawn() {
+        return match spawn_reaped(&mut cmd) {
             Ok(_) => Ok(true),
             Err(e) => Err(format!("Failed to spawn {}: {}", player_bin, e)),
         };

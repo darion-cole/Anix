@@ -19,6 +19,8 @@ work="${ANIX_BUILD_DIR:-$HOME/.cache/anix-build}"
 site="${ANIX_SITE_URL:-https://anix-linux.vercel.app}"
 
 case "$work" in *" "*) echo "ANIX_BUILD_DIR must not contain spaces: $work" >&2; exit 1 ;; esac
+# Absolute, since the build runs from inside it.
+mkdir -p "$work" && work="$(cd "$work" && pwd)"
 
 plugins_src=""
 for dir in /usr/lib64/gstreamer-1.0 "/usr/lib/$(uname -m)-linux-gnu/gstreamer-1.0"; do
@@ -206,6 +208,11 @@ if grep -rla -e "$HOME" ${check_user:+-e "$check_user"} "$appdir"; then
   echo "The package still contains this machine's home folder or user name (files above)." >&2
   exit 1
 fi
+
+# Tauri's cached AppRun.wrapped is 0770; mounts that keep the packager as owner (firejail, the
+# AppImage catalog's test) then refuse to start it. Everyone may read every file and run the programs.
+chmod -R a+rX "$appdir"
+chmod a+x "$appdir"/AppRun*
 
 rm -f "$built"
 (cd "$bundle" && ARCH=x86_64 LDAI_OUTPUT="$built" OUTPUT="$built" \

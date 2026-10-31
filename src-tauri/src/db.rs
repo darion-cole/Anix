@@ -147,6 +147,10 @@ pub async fn init_db_at(db_path: &Path) -> Result<SqlitePool, AppError> {
             error_detail(e)
         )));
     }
+    // Best effort: a merge that fails must never keep the app from starting.
+    if let Err(e) = merge_stand_in_ids(&pool).await {
+        warn!("could not merge stand-in ids: {}", e);
+    }
 
     Ok(pool)
 }
@@ -384,6 +388,114 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), AppError> {
     Ok(())
 }
 
+/// The user's own data keyed by an anime id, as (table, id column). Links come before files
+/// (files refer to their link). Downloads, playlist items and the tracker queue are left out:
+/// their rows are single things (a file, a playlist entry, a push) that a copy would double.
+const ANIME_KEYED_TABLES: [(&str, &str); 9] = [
+    ("watch_history", "anilist_id"),
+    ("watch_events", "anilist_id"),
+    ("watchlist", "anilist_id"),
+    ("notification_preferences", "media_id"),
+    ("notified_episodes", "media_id"),
+    ("sent_reminders", "media_id"),
+    ("release_checks", "media_id"),
+    ("local_media_links", "anilist_id"),
+    ("local_media_files", "anilist_id"),
+];
+
+/// Copies what the user did under a stand-in id (an anime first known without its AniList id)
+/// to the AniList id the mapping cache learned since, so history, watchlist, bells and files
+/// are not split across two ids. Rows the AniList id lacks are copied; for an episode in both,
+/// the further progress wins (finished over unfinished, then the newer save). The stand-in rows
+/// stay (only adding, never destroying), and the lists leave merged stand-ins out. Each mapping
+/// is copied once, when it is new (or points at another AniList id): from then on the catalogue
+/// hands out the AniList id, so later writes go there, and what the user removes under it must
+/// not come back. Runs at every start (after the migrations, best effort) and after new
+/// mappings are learned.
+pub async fn merge_stand_in_ids(pool: &SqlitePool) -> Result<(), AppError> {
+    let mut tx = pool.begin().await?;
+    merge_stand_ins(&mut tx).await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+async fn merge_stand_ins(conn: &mut SqliteConnection) -> Result<(), AppError> {
+    // The stand-in formula of `catalogue::ids::synthetic_id`, in SQL. A new or changed mapping
+    // gets merged_at = 0, which marks it as not copied yet.
+    sqlx::query(&format!(
+        r#"
+        INSERT INTO catalogue_merged_ids (stand_in, anilist_id, merged_at)
+        SELECT -((CASE site WHEN 'mal' THEN 1 WHEN 'kitsu' THEN 2 ELSE 3 END) * {span} + ext_id), anilist_id, 0
+        FROM catalogue_ids
+        WHERE anilist_id > 0 AND site IN ('mal', 'kitsu', 'imdb') AND ext_id BETWEEN 1 AND {span} - 1
+        ON CONFLICT(stand_in) DO UPDATE SET anilist_id = excluded.anilist_id, merged_at = 0
+        WHERE catalogue_merged_ids.anilist_id <> excluded.anilist_id
+        "#,
+        span = crate::catalogue::ids::SITE_SPAN
+    ))
+    .execute(&mut *conn)
+    .await?;
+
+    sqlx::query(
+        r#"
+        UPDATE watch_history SET
+            position_ms = s.position_ms,
+            duration_ms = s.duration_ms,
+            provider = s.provider,
+            category = s.category,
+            episode_title = COALESCE(watch_history.episode_title, s.episode_title),
+            completed = s.completed,
+            updated_at = MAX(watch_history.updated_at, s.updated_at)
+        FROM watch_history AS s JOIN catalogue_merged_ids AS m ON s.anilist_id = m.stand_in
+        WHERE m.merged_at = 0
+          AND watch_history.anilist_id = m.anilist_id
+          AND watch_history.episode_number = s.episode_number
+          AND (s.completed > watch_history.completed
+               OR (s.completed = watch_history.completed AND s.updated_at > watch_history.updated_at))
+        "#,
+    )
+    .execute(&mut *conn)
+    .await?;
+
+    for (table, key) in ANIME_KEYED_TABLES {
+        let columns: Vec<String> = sqlx::query(&format!("PRAGMA table_info({table})"))
+            .fetch_all(&mut *conn)
+            .await?
+            .iter()
+            .map(|row| row.get::<String, _>("name"))
+            // A row id of its own is given anew.
+            .filter(|name| name != "id")
+            .collect();
+        if columns.is_empty() {
+            continue;
+        }
+        let values: Vec<String> = columns
+            .iter()
+            .map(|name| if name == key { "m.anilist_id".to_string() } else { format!("t.{name}") })
+            .collect();
+        // INSERT OR IGNORE does not ignore a foreign-key failure: a file goes only where its
+        // AniList id has a link (copied just before, or the user's own).
+        let link_check = if table == "local_media_files" {
+            " AND EXISTS (SELECT 1 FROM local_media_links AS l WHERE l.anilist_id = m.anilist_id)"
+        } else {
+            ""
+        };
+        sqlx::query(&format!(
+            "INSERT OR IGNORE INTO {table} ({}) SELECT {} FROM {table} AS t \
+             JOIN catalogue_merged_ids AS m ON t.{key} = m.stand_in WHERE m.merged_at = 0{link_check}",
+            columns.join(", "),
+            values.join(", ")
+        ))
+        .execute(&mut *conn)
+        .await?;
+    }
+    sqlx::query("UPDATE catalogue_merged_ids SET merged_at = ?1 WHERE merged_at = 0")
+        .bind(current_unix_millis())
+        .execute(&mut *conn)
+        .await?;
+    Ok(())
+}
+
 async fn migrate_watch_history(conn: &mut SqliteConnection) -> Result<(), AppError> {
     let info_rows = sqlx::query("PRAGMA table_info(watch_history)")
         .fetch_all(&mut *conn)
@@ -556,8 +668,19 @@ fn map_history_row(r: SqliteRow) -> HistoryEntry {
 /// The entry is the anime's most recently played episode. If that episode is already
 /// finished and a later episode of the same anime has been started but not finished, the
 /// later one is returned instead; a finished episode is only listed when nothing later is
-/// in progress.
+/// in progress. Capped at 20 for the Home rail; Library › History uses [`get_watch_history`].
 pub async fn get_continue_watching(pool: &SqlitePool) -> Result<Vec<HistoryEntry>, AppError> {
+    history_entries(pool, 20).await
+}
+
+/// Every anime in the watch history, in the same order and with the same pick as
+/// [`get_continue_watching`], with no cap.
+pub async fn get_watch_history(pool: &SqlitePool) -> Result<Vec<HistoryEntry>, AppError> {
+    // SQLite reads a negative LIMIT as "no limit".
+    history_entries(pool, -1).await
+}
+
+async fn history_entries(pool: &SqlitePool, limit: i64) -> Result<Vec<HistoryEntry>, AppError> {
     let sql = format!(
         r#"
         WITH ranked AS (
@@ -567,7 +690,7 @@ pub async fn get_continue_watching(pool: &SqlitePool) -> Result<Vec<HistoryEntry
                        ORDER BY updated_at DESC, episode_number DESC
                    ) AS rn
             FROM watch_history
-            WHERE position_ms > 0
+            WHERE position_ms > 0 AND anilist_id NOT IN (SELECT stand_in FROM catalogue_merged_ids)
         ),
         pick AS (
             SELECT l.anilist_id,
@@ -593,13 +716,13 @@ pub async fn get_continue_watching(pool: &SqlitePool) -> Result<Vec<HistoryEntry
         FROM pick p
         JOIN watch_history h
           ON h.anilist_id = p.anilist_id AND h.episode_number = p.episode_number
-        ORDER BY p.last_played DESC
-        LIMIT 20
+        ORDER BY p.last_played DESC, p.anilist_id DESC
+        LIMIT ?1
         "#,
         t = WATCHED_THRESHOLD_PERCENT
     );
 
-    let rows = sqlx::query(&sql).fetch_all(pool).await?;
+    let rows = sqlx::query(&sql).bind(limit).fetch_all(pool).await?;
     Ok(rows.into_iter().map(map_history_row).collect())
 }
 
@@ -643,7 +766,10 @@ pub async fn get_episode_progress(
     Ok(row.map(|r| (r.get("position_ms"), r.get("duration_ms"))))
 }
 
-/// Inserts or updates the row of `(entry.anilist_id, entry.episode_number)`.
+/// Inserts or updates the row of `(entry.anilist_id, entry.episode_number)`. A finished
+/// episode stays as it was (position, time, provider) until a save finishes it again, so
+/// opening it for a moment never makes it look unwatched, moves it in Continue Watching or
+/// counts today in the statistics.
 pub async fn update_watch_progress(
     pool: &SqlitePool,
     entry: &HistoryEntry,
@@ -667,7 +793,8 @@ pub async fn update_watch_progress(
             from_remote = excluded.from_remote,
             title = excluded.title,
             cover = COALESCE(excluded.cover, watch_history.cover),
-            completed = MAX(watch_history.completed, excluded.completed);
+            completed = MAX(watch_history.completed, excluded.completed)
+        WHERE NOT (watch_history.completed = 1 AND excluded.completed = 0);
         "#,
     )
     .bind(entry.anilist_id)
@@ -712,7 +839,9 @@ async fn record_watch_event<'e, E: sqlx::Executor<'e, Database = sqlx::Sqlite>>(
 /// time of each watched episode (rows from before the record existed, or restored from a backup).
 pub async fn get_watch_times(pool: &SqlitePool) -> Result<Vec<i64>, AppError> {
     let rows = sqlx::query(
-        "SELECT watched_at AS at FROM watch_events UNION ALL SELECT updated_at AS at FROM watch_history WHERE completed = 1",
+        "SELECT watched_at AS at FROM watch_events WHERE anilist_id NOT IN (SELECT stand_in FROM catalogue_merged_ids) \
+         UNION ALL SELECT updated_at AS at FROM watch_history WHERE completed = 1 \
+         AND anilist_id NOT IN (SELECT stand_in FROM catalogue_merged_ids)",
     )
     .fetch_all(pool)
     .await?;
@@ -722,7 +851,8 @@ pub async fn get_watch_times(pool: &SqlitePool) -> Result<Vec<i64>, AppError> {
 /// Marks `episodes` of one anime as watched, or takes the mark off, in one transaction.
 /// A marked episode is put at its end: its known length, or 1 ms of 1 ms when the length is
 /// not known, so the 85% rule counts it everywhere. Unmarking keeps the row (title, length)
-/// with the position back at the start. Returns the number of rows written.
+/// with the position back at the start and drops the episode's watch days, so the streak and
+/// Stats no longer count it. Returns the number of rows written.
 pub async fn set_episodes_watched(
     pool: &SqlitePool,
     anilist_id: i32,
@@ -760,7 +890,7 @@ pub async fn set_episodes_watched(
             record_watch_event(&mut *tx, anilist_id as i64, episode).await?;
             marked
         } else {
-            sqlx::query(
+            let unmarked = sqlx::query(
                 r#"
                 UPDATE watch_history SET position_ms = 0, completed = 0
                 WHERE anilist_id = ?1 AND ABS(episode_number - ?2) < 0.001
@@ -769,7 +899,13 @@ pub async fn set_episodes_watched(
             .bind(anilist_id)
             .bind(episode)
             .execute(&mut *tx)
-            .await?
+            .await?;
+            sqlx::query("DELETE FROM watch_events WHERE anilist_id = ?1 AND ABS(episode_number - ?2) < 0.001")
+                .bind(anilist_id)
+                .bind(episode)
+                .execute(&mut *tx)
+                .await?;
+            unmarked
         };
         written += result.rows_affected();
     }
@@ -795,7 +931,7 @@ pub async fn get_watched_history(pool: &SqlitePool) -> Result<Vec<WatchedEpisode
         r#"
         SELECT anilist_id, title, cover, episode_number, duration_ms, updated_at
         FROM watch_history
-        WHERE completed = 1
+        WHERE completed = 1 AND anilist_id NOT IN (SELECT stand_in FROM catalogue_merged_ids)
         ORDER BY updated_at DESC
         "#,
     )
@@ -865,6 +1001,7 @@ pub async fn get_watchlist(pool: &SqlitePool) -> Result<Vec<crate::models::Watch
         r#"
         SELECT anilist_id, title, cover, format, average_score, added_at, status, synced
         FROM watchlist
+        WHERE anilist_id NOT IN (SELECT stand_in FROM catalogue_merged_ids)
         ORDER BY added_at DESC
         "#
     )
@@ -971,7 +1108,10 @@ pub async fn take_remote_status(pool: &SqlitePool, anilist_id: i32, status: &str
 
 /// Statuses chosen here that still have to be sent: (anime, status).
 pub async fn unsynced_watchlist(pool: &SqlitePool) -> Result<Vec<(i32, String)>, AppError> {
-    let rows = sqlx::query("SELECT anilist_id, status FROM watchlist WHERE synced = 0 ORDER BY added_at ASC")
+    let rows = sqlx::query(
+        "SELECT anilist_id, status FROM watchlist WHERE synced = 0 \
+         AND anilist_id NOT IN (SELECT stand_in FROM catalogue_merged_ids) ORDER BY added_at ASC",
+    )
         .fetch_all(pool)
         .await?;
     Ok(rows.into_iter().map(|r| (r.get::<i64, _>("anilist_id") as i32, r.get("status"))).collect())
@@ -1197,6 +1337,20 @@ pub async fn update_download_status(
     Ok(())
 }
 
+/// Turns a `FAILED` download back into `QUEUED` with its progress and error cleared, in one
+/// statement so only a row that really failed is queued again. Returns whether it was.
+pub async fn requeue_failed_download(pool: &SqlitePool, id: &str) -> Result<bool, AppError> {
+    let result = sqlx::query(
+        "UPDATE downloads SET status = 'QUEUED', progress = 0.0, error_msg = NULL, updated_at = ?1 \
+         WHERE id = ?2 AND status = 'FAILED'",
+    )
+    .bind(current_unix_millis())
+    .bind(id)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() == 1)
+}
+
 /// Records progress of a running download. Does nothing unless the row is `DOWNLOADING`,
 /// so a late write cannot disturb a row that has already finished or failed.
 pub async fn update_download_progress(
@@ -1408,7 +1562,7 @@ pub struct NotificationBell {
 pub async fn list_notification_bells(pool: &SqlitePool) -> Result<Vec<NotificationBell>, AppError> {
     let rows = sqlx::query(
         "SELECT media_id, media_title, cover_image, enabled_at FROM notification_preferences \
-         WHERE enabled = 1 ORDER BY media_id",
+         WHERE enabled = 1 AND media_id NOT IN (SELECT stand_in FROM catalogue_merged_ids) ORDER BY media_id",
     )
     .fetch_all(pool)
     .await?;
@@ -1511,7 +1665,8 @@ pub async fn list_notification_preferences(
     pool: &SqlitePool,
 ) -> Result<Vec<NotificationPreference>, AppError> {
     let rows = sqlx::query(
-        "SELECT media_id, enabled, media_title, cover_image FROM notification_preferences WHERE enabled = 1",
+        "SELECT media_id, enabled, media_title, cover_image FROM notification_preferences WHERE enabled = 1 \
+         AND media_id NOT IN (SELECT stand_in FROM catalogue_merged_ids)",
     )
     .fetch_all(pool)
     .await?;

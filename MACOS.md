@@ -97,3 +97,5 @@ The changes are small and kept in a few places, so most upstream releases merge 
   sign-in and folders (used by `open_in_browser` there and by `commands/system.rs`).
 - `src-tauri/src/commands/desktop.rs`: window buttons on the left.
 - `src-tauri/src/system/hwaccel.rs`: a macOS note in the hardware report.
+- `src-tauri/src/system/mod.rs`: `on_ui_main_thread`, the macOS main-thread check used by `restart`
+  (upstream asks GTK, which macOS does not have).

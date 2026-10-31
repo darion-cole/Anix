@@ -1,5 +1,53 @@
 # Changelog
 
+## 1.3.2
+
+### Video Player & Playback Engine
+- Embedded mpv state synchronization: resolved playback control states for play, pause, and Spacebar toggles; playback controls accurately reflect playback status and watch progress timestamps are saved reliably across sessions.
+- Lazy subtitle loading: the embedded player prioritizes loading the primary selected subtitle track on stream start, deferring secondary and alternative subtitle tracks until explicitly selected, preventing initial buffering stalls.
+- Playback buffering indicators: video buffering and seeking display a dedicated loading indicator instead of a paused frame; episodes can be replayed or seeked immediately upon reaching the end.
+- WebView crash recovery: automatic recovery detects failed render processes and restores the active view with notification center alerts; web-player rendering failures in AppImage builds fall back gracefully to the embedded mpv engine, and crash loops are prevented after three rapid restarts.
+- Tray integration: minimizing or hiding the main window to the system tray automatically pauses active video playback.
+
+### Library, Watch History & Trackers
+- Minimum watch threshold: episodes are added to History and Continue Watching only after crossing a minimum threshold (10 seconds or 2% duration), preventing completed episodes from resetting on accidental clicks.
+- Complete watch history: the Library History tab presents the full history archive with accurate counters, while the Home view preserves its concise 20-item layout.
+- Rewatching status support: added full support for the "Rewatching" status in AniList sync views and list-editing dialogs.
+- Resilient offline tracker sync queue: watch progress updates are queued locally and retried if AniList, MyAnimeList, or Comick services encounter downtime or network stalls.
+- Statistics and completion accuracy: unmarking watched episodes updates statistics and streaks accurately, and episode counts exceeding the published total no longer prematurely trigger completed status.
+- Catalogue identifier reconciliation: titles discovered via secondary catalogues during upstream outages automatically merge watch history, custom notifications, and linked local files once matched with their primary AniList entry.
+
+### Offline Media & Downloads
+- Active transfer cancellation: in-progress downloads can be cancelled cleanly, stopping active subprocesses and pruning temporary `.part` files without affecting finished media.
+- Resilient download resumption: interrupted downloads resume from their verified downloaded offset upon retry without spawning duplicate jobs.
+- Expanded media container support: both local library scanning and download workflows now recognize `.m4v`, `.mov`, `.ts`, and `.flv` video containers alongside `.mp4`, `.mkv`, and `.webm`.
+- Process lifecycle management: cleanly reaps external media player (mpv/VLC) and file-manager child processes upon termination to eliminate zombie processes.
+
+### Modular Extension System & Security
+- Extension retention during network failures: failed repository syncs no longer uninstall extensions; existing local versions and user configurations remain active and are marked as update-pending in Settings › Plugins.
+- Strict language matching fallback: extensions with unspecified languages are evaluated after explicitly matched language providers when strict language filtering is enabled.
+- Instant extension state updates: enabling, disabling, or adding extension repositories applies immediately without requiring an application restart.
+- Adaptive provider timeouts: extensions respect declared execution budgets, and endpoints that repeatedly timeout enter a temporary cooldown to preserve UI responsiveness.
+- Web session recycling: in-app webview verification sessions use LRU (least-recently-used) recycling, ensuring session verification remains responsive across numerous providers.
+- Local network isolation (SSRF protection): extension-provided URLs and stream links are strictly validated to prevent resolving to private, loopback, or local network addresses, protecting the local environment.
+
+### Catalogue & User Interface
+- Precise catalogue availability status: unlisted titles display clear "Not Found" notices rather than generic offline warnings, and offline views only trigger when all catalogue sources are unreachable (displaying cached data when available).
+- Attributed score ratings: review scores clearly attribute their originating database or community source.
+- Deep links and missing episode routing: invalid episode links display helpful fallback navigation to the series detail view, and deep links seamlessly support titles indexed across all supported catalogues.
+- Multilingual diagnostic messaging: localized error messages, playback failure descriptions, download notices, file dialogs, and database alerts across all 12 supported languages.
+
+### Desktop & System Integration
+- Clean restart behavior: manual in-app restarts no longer minimize to tray unexpectedly or re-trigger previous deep links.
+- Notification action dispatch: clicking desktop notification alerts for newly released episodes opens the corresponding series directly.
+- Background scheduler optimization: airing reminders run without delay when no custom series alerts are configured.
+- Desktop URL scheme integration: AppImage builds register `anix://` and `anilili://` protocol handlers on launch for deep-linking support.
+- Atomic update safety: interrupted or aborted updates no longer risk leaving corrupted AppImage binaries on disk.
+
+### Packaging & Distribution
+- Native DEB and RPM packages: automated CI release pipeline now produces verified `.deb` (Debian, Ubuntu, Linux Mint) and `.rpm` (Fedora, openSUSE) packages that utilize system WebKitGTK and GStreamer dependencies.
+- Arch User Repository (AUR): added official `anix-bin` PKGBUILD packaging in `packaging/aur/` for Arch Linux and CachyOS.
+
 ## 1.3.1
 
 ### Languages

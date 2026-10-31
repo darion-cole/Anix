@@ -1,6 +1,9 @@
 //! Provider manager behaviour, exercised with in-process providers and a loopback HTTP server
 //! that plays the part of a stream host. No outside network is involved.
 
+mod english_ui;
+
+use english_ui::english_ui;
 use anix_lib::error::AppError;
 use anix_lib::models::{AnimeQuery, Category, EpisodeItem, ProviderData, SourcesResult, StreamItem};
 use anix_lib::clients::anilist::MediaHint;
@@ -142,6 +145,8 @@ fn hls(url: String) -> StreamItem {
 enum Listing {
     Episodes(Vec<f64>),
     Fail(AppError),
+    /// Never answers within any budget.
+    Hang,
 }
 
 struct MockProvider {
@@ -183,6 +188,10 @@ impl MockProvider {
 
 #[async_trait]
 impl AnimeProvider for MockProvider {
+    fn allows_private_network(&self) -> bool {
+        true // its test streams are served on loopback
+    }
+
     fn name(&self) -> &'static str {
         self.name
     }
@@ -202,6 +211,10 @@ impl AnimeProvider for MockProvider {
         self.titles_seen.lock().unwrap().extend(query.titles.iter().cloned());
         match &self.listing {
             Listing::Fail(err) => Err(err.clone()),
+            Listing::Hang => {
+                tokio::time::sleep(Duration::from_secs(24 * 3600)).await;
+                Err(AppError::Other("hung".into()))
+            }
             Listing::Episodes(numbers) => {
                 let list: Vec<EpisodeItem> = numbers
                     .iter()
@@ -314,7 +327,7 @@ async fn hls_with_root_relative_and_query_urls_verifies() {
     ])
     .await;
 
-    assert!(verify_stream_segment(&hls(host.url("/a/b/master.m3u8?token=x/y"))).await);
+    assert!(verify_stream_segment(&hls(host.url("/a/b/master.m3u8?token=x/y")), true).await);
     assert_eq!(
         host.requests(),
         vec!["/a/b/master.m3u8?token=x/y", "/proxy/variant.m3u8?id=7", "/proxy/seg0.ts"]
@@ -331,11 +344,11 @@ async fn media_playlist_without_master_verifies_and_dead_segments_fail() {
     ])
     .await;
 
-    assert!(verify_stream_segment(&hls(host.url("/live/index.m3u8"))).await);
-    assert!(!verify_stream_segment(&hls(host.url("/dead/index.m3u8"))).await, "segment is a 404");
-    assert!(!verify_stream_segment(&hls(host.url("/embed/page"))).await, "HTML is not a playlist");
-    assert!(!verify_stream_segment(&hls(host.url("/missing.m3u8"))).await);
-    assert!(!verify_stream_segment(&hls("ftp://example/x.m3u8".to_string())).await);
+    assert!(verify_stream_segment(&hls(host.url("/live/index.m3u8")), true).await);
+    assert!(!verify_stream_segment(&hls(host.url("/dead/index.m3u8")), true).await, "segment is a 404");
+    assert!(!verify_stream_segment(&hls(host.url("/embed/page")), true).await, "HTML is not a playlist");
+    assert!(!verify_stream_segment(&hls(host.url("/missing.m3u8")), true).await);
+    assert!(!verify_stream_segment(&hls("ftp://example/x.m3u8".to_string()), true).await);
 }
 
 #[tokio::test]
@@ -360,7 +373,7 @@ async fn mp4_check_follows_relative_redirects_with_one_referer() {
     stream.headers = Some(custom);
     stream.origin = Some("https://origin.example".to_string());
 
-    assert!(verify_stream_segment(&stream).await);
+    assert!(verify_stream_segment(&stream, true).await);
     assert_eq!(host.requests(), vec!["/play/1/video.mp4", "/files/real.mp4", "/files/final.mp4"]);
 
     let headers = host.headers_for("/files/final.mp4");
@@ -377,12 +390,12 @@ async fn verification_puts_the_working_stream_first_and_keeps_the_rest() {
     let working = hls(host.url("/hls/master.m3u8"));
     let other = hls(host.url("/also-gone.m3u8"));
 
-    let ordered = verify_streams(vec![broken.clone(), working.clone(), other.clone()]).await.unwrap();
+    let ordered = verify_streams(vec![broken.clone(), working.clone(), other.clone()], true).await.unwrap();
     assert_eq!(ordered, vec![working, broken.clone(), other.clone()]);
 
-    let reason = verify_streams(vec![broken, other]).await.unwrap_err();
+    let reason = verify_streams(vec![broken, other], true).await.unwrap_err();
     assert!(reason.starts_with("HTTP 404"), "unexpected reason: {}", reason);
-    assert_eq!(verify_streams(Vec::new()).await.unwrap_err(), "no streams");
+    assert_eq!(verify_streams(Vec::new(), true).await.unwrap_err(), "no streams");
 }
 
 fn file(url: String) -> StreamItem {
@@ -414,11 +427,11 @@ async fn a_stream_host_that_answers_with_its_anti_bot_page_is_named_as_such() {
         hls(host.url("/half/index.m3u8")),
         file(host.url("/soft/video.mp4")),
     ] {
-        let reason = verify_streams(vec![stream.clone()]).await.unwrap_err();
+        let reason = verify_streams(vec![stream.clone()], true).await.unwrap_err();
         assert_eq!(reason, "127.0.0.1 answered with its anti-bot check", "{}", stream.url);
     }
     // An ordinary refusal keeps its status.
-    let reason = verify_streams(vec![file(host.url("/nowhere.mp4"))]).await.unwrap_err();
+    let reason = verify_streams(vec![file(host.url("/nowhere.mp4"))], true).await.unwrap_err();
     assert_eq!(reason, "HTTP 404 from 127.0.0.1");
 }
 
@@ -447,17 +460,17 @@ async fn a_web_page_is_not_accepted_as_a_video() {
     .await;
 
     for path in ["/page/video.mp4", "/mislabelled/video.mp4"] {
-        let reason = verify_streams(vec![file(host.url(path))]).await.unwrap_err();
+        let reason = verify_streams(vec![file(host.url(path))], true).await.unwrap_err();
         assert_eq!(reason, "127.0.0.1 answered with a web page instead of a video", "{}", path);
     }
-    let reason = verify_streams(vec![hls(host.url("/page/index.m3u8"))]).await.unwrap_err();
+    let reason = verify_streams(vec![hls(host.url("/page/index.m3u8"))], true).await.unwrap_err();
     assert_eq!(reason, "127.0.0.1 answered with a web page instead of a video");
-    let reason = verify_streams(vec![hls(host.url("/embed.m3u8"))]).await.unwrap_err();
+    let reason = verify_streams(vec![hls(host.url("/embed.m3u8"))], true).await.unwrap_err();
     assert_eq!(reason, "127.0.0.1 answered with a web page instead of a playlist");
 
-    assert!(verify_stream_segment(&file(host.url("/real/video.mp4"))).await);
+    assert!(verify_stream_segment(&file(host.url("/real/video.mp4")), true).await);
     // Media sent under a text type is still media.
-    assert!(verify_stream_segment(&hls(host.url("/odd/index.m3u8"))).await);
+    assert!(verify_stream_segment(&hls(host.url("/odd/index.m3u8")), true).await);
 }
 
 // ---------------------------------------------------------------- racing and reporting
@@ -487,6 +500,7 @@ async fn first_verified_provider_wins_regardless_of_position() {
 
 #[tokio::test]
 async fn preferred_provider_is_the_only_one_tried() {
+    english_ui();
     let host = host_with_good_stream().await;
     let good = vec![hls(host.url("/hls/master.m3u8"))];
     let first = Arc::new(MockProvider::new("first", Ok(good.clone())));
@@ -497,12 +511,15 @@ async fn preferred_provider_is_the_only_one_tried() {
     assert_eq!(result.provider.as_deref(), Some("second"));
     assert_eq!(first.list_calls() + first.source_calls(), 0, "the other provider must stay untouched");
 
+    // A server that is gone: a plain first line the player can translate, the raw reason under it.
     let message = failure_message(sources(&manager, 1.0, "sub", Some("nope")).await);
-    assert!(message.contains("Unknown provider 'nope'"), "{}", message);
+    assert_eq!(headline(&message), "The server “nope” is no longer available. Choose another server.");
+    assert!(details(&message).contains("Unknown provider 'nope'"), "{}", message);
 }
 
 #[tokio::test]
 async fn every_failure_is_reported_with_its_reason() {
+    english_ui();
     let host = host_with_good_stream().await;
     let unplayable = Arc::new(MockProvider::new("unplayable", Ok(vec![hls(host.url("/gone.m3u8"))])));
     let blocked = Arc::new(MockProvider::new("blocked", Err(AppError::CaptchaRequired)));
@@ -538,6 +555,7 @@ async fn every_failure_is_reported_with_its_reason() {
 
 #[tokio::test]
 async fn dub_requests_only_reach_providers_with_a_dub() {
+    english_ui();
     let host = host_with_good_stream().await;
     let good = vec![hls(host.url("/hls/master.m3u8"))];
     let sub_only = Arc::new(MockProvider::new("sub-only", Ok(good.clone())));
@@ -554,6 +572,13 @@ async fn dub_requests_only_reach_providers_with_a_dub() {
     let message = failure_message(sources(&only_sub, 1.0, "dub", None).await);
     assert_eq!(details(&message), "No source found. sub-only: no dub");
     assert_eq!(headline(&message), "No installed extension has this episode in dub.");
+}
+
+#[test]
+fn an_episode_listing_has_room_for_an_extensions_search_and_episode_list() {
+    use anix_lib::plugins::provider::{EPISODES_TIMEOUT, SEARCH_TIMEOUT};
+    // The listing runs one search and one findEpisodes call in a row, each up to its own limit.
+    assert!(anix_lib::providers::manager::EPISODES_TIMEOUT >= SEARCH_TIMEOUT + EPISODES_TIMEOUT);
 }
 
 #[tokio::test]
@@ -632,6 +657,24 @@ async fn an_unreachable_site_is_deprioritised_but_never_locked_out() {
     assert_eq!(flaky.list_calls(), 2);
 }
 
+#[tokio::test(start_paused = true)]
+async fn a_listing_that_runs_out_of_time_is_skipped_by_the_next_page_opened() {
+    let mut hung = MockProvider::new("hung", Ok(Vec::new()));
+    hung.listing = Listing::Hang;
+    let hung = Arc::new(hung);
+    let up = Arc::new(MockProvider::new("up", Ok(Vec::new())));
+    let manager = manager_of(&[hung.clone(), up.clone()]);
+
+    let listed = manager.get_all_episodes(21, None, Some("One Piece".to_string())).await.unwrap();
+    assert_eq!(listed.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), vec!["up"]);
+    assert_eq!(hung.list_calls(), 1);
+
+    // Another page right after does not wait on the same site again.
+    let listed = manager.get_all_episodes(22, None, Some("Other".to_string())).await.unwrap();
+    assert_eq!(listed.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), vec!["up"]);
+    assert_eq!(hung.list_calls(), 1);
+}
+
 // ---------------------------------------------------------------- in-app browser sessions
 
 static GUARDED_SITE: SiteSpec = SiteSpec {
@@ -669,6 +712,10 @@ impl GuardedProvider {
 
 #[async_trait]
 impl AnimeProvider for GuardedProvider {
+    fn allows_private_network(&self) -> bool {
+        true // its test streams are served on loopback
+    }
+
     fn name(&self) -> &'static str {
         "guarded"
     }
@@ -839,6 +886,7 @@ fn the_reason_shown_is_the_one_the_user_can_act_on() {
 
 #[tokio::test]
 async fn a_removed_video_is_named_in_the_first_line() {
+    english_ui();
     let gone = Arc::new(MockProvider::new("gone", Err(AppError::Network("HTTP 404 from cdn.example".into()))));
     let manager = manager_of(&[gone]);
     let message = failure_message(sources(&manager, 1.0, "sub", None).await);

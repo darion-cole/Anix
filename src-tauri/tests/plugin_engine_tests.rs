@@ -269,6 +269,18 @@ async fn fetch_refuses_other_schemes_and_private_addresses() {
         let answer = run(&strict, "refused", json!(url)).await.unwrap();
         assert!(answer.as_str().unwrap().contains("private network access denied"), "{}: {}", url, answer);
     }
+    // A name that resolves to loopback (`localhost4` in /etc/hosts) is refused before the
+    // connection is made, so the site never sees the request.
+    let hosts = std::fs::read_to_string("/etc/hosts").unwrap_or_default();
+    let alias = hosts.lines().find_map(|line| {
+        let mut fields = line.split('#').next()?.split_whitespace();
+        (fields.next()? == "127.0.0.1").then(|| fields.find(|n| !n.contains('.') && *n != "localhost"))?
+    });
+    if let Some(alias) = alias {
+        let url = format!("http://{}:{}/echo", alias, site.addr.port());
+        let answer = run(&strict, "refused", json!(url)).await.unwrap();
+        assert!(answer.as_str().unwrap().contains("private network access denied"), "{}: {}", url, answer);
+    }
     assert_eq!(site.count("/echo"), 0);
 }
 
@@ -627,6 +639,30 @@ async fn a_community_provider_searches_a_site() {
     assert_eq!(episodes.as_array().unwrap().len(), 2);
     assert_eq!(episodes[1]["number"], 1);
     assert_eq!(episodes[1]["title"], "I'm Luffy!");
+}
+
+// A single-threaded runtime on purpose: a plugin start on its one thread would stop every
+// other task until the plugin's code has loaded.
+#[tokio::test]
+async fn starting_a_slow_plugin_leaves_async_work_running() {
+    let engine = runtime(
+        "slow-start",
+        "const until = Date.now() + 800; while (Date.now() < until) {}\nclass Provider { getSettings() { return { episodeServers: [], supportsDub: false }; } }",
+    );
+    let ticks = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counter = ticks.clone();
+    let ticker = tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    });
+    assert!(engine.running().is_none(), "nothing is started before the first call");
+    engine.call("getSettings", &[], Duration::from_secs(5), SessionUse::Existing).await.unwrap();
+    ticker.abort();
+    let ticked = ticks.load(std::sync::atomic::Ordering::SeqCst);
+    assert!(ticked >= 10, "other tasks ran only {} times while the plugin loaded", ticked);
+    assert!(engine.running().is_some());
 }
 
 #[tokio::test(flavor = "multi_thread")]

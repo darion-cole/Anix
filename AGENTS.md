@@ -18,7 +18,7 @@ Streaming sources are not built in. They come from **extensions**: JavaScript fi
 from extension repositories (see [Extensions](#extensions)). The extensions live in a separate
 repository (`../plugins`, which has its own `AGENTS.md`).
 
-- Version 1.3.1, identifier `io.anix.app`, licence MIT.
+- Version 1.3.2, identifier `io.anix.app`, licence MIT.
 - Public site: https://anix-linux.vercel.app (download page, extension list, `version.json` for update checks).
 - The app was first called **Anilili**. Old names still work and must keep working: `ANILILI_*`
   env vars, the `$anilili` plugin global, `anilili://` links, and old data folders (migrated by
@@ -66,12 +66,13 @@ React/TS UI (src/)  ──invoke()──▶  Tauri 2 commands (src-tauri/src/com
 | `src-tauri/src/web_session.rs` | In-app webview sessions for the user's site verification |
 | `src-tauri/src/db.rs` | Schema and migrations; app and config folders |
 | `src-tauri/src/error.rs` | `AppError` and stable error codes (mirrored in `src/lib/errorCodes.ts`) |
-| `src-tauri/src/i18n.rs` | Backend-shown text (notifications, tray, reminders) |
+| `src-tauri/src/i18n.rs` | Backend-shown text (notifications, tray, reminders, file pickers, play-failure headline, fatal dialogs) |
 | `src-tauri/tests/` | Integration tests, `*_support/` helpers, `fixtures/` |
 | `src-tauri/examples/plugin_run.rs` | CLI to run one extension in the real runtime |
 | `src-tauri/resources/` | Anime4K shaders, hardware-decoding self-test clip |
-| `scripts/` | `build-appimage.sh`, `build-libmpv-lgpl.sh`, `i18n-check.mjs`, `i18n-test.mjs` |
+| `scripts/` | `build-appimage.sh`, `build-libmpv-lgpl.sh`, `i18n-check.mjs`, `i18n-test.mjs`, `player-test.mjs` (embedded mpv stand-in), `history-test.mjs` (when a visit counts as watch history) and `routes-test.mjs` (accepted anime ids, deep links and episode numbers; anime-page scores), all run by `i18n:test` |
 | `THIRD-PARTY-NOTICES.md` | Bundled components and licences |
+| `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `SECURITY.md`, `.github/ISSUE_TEMPLATE/`, `.github/pull_request_template.md` | Contributor docs and forms. Keep them in step with the rules here |
 | `docs/` | Gitignored and out of date (describes an older stack). Do not trust or copy it. |
 
 ## Setup, run, build, test
@@ -103,7 +104,8 @@ Notes:
 - Only one instance runs at a time (single-instance plugin). A second launch hands its arguments to the running window. Stop only the processes you started. Never kill every `anix` process.
 - Debug-only switches: `ANIX_CATALOGUE_DOWN=anilist,myanimelist,…` simulates catalogue outages, and `ANIX_TEST_NOTIFICATION=1` shows a sample notification.
 - `ANIX_PLAYER_ENGINE=web` or `--web-player` forces the web player. `--background` runs the release checks with no window.
-- The only deep link is `anix://anime/<id>` (negative ids allowed), parsed in `src/router.tsx` `parseDeepLink`.
+- The only deep link is `anix://anime/<id>` (negative ids allowed), parsed by `parseDeepLink` in `src/lib/routes.ts`.
+  An AppImage registers the `anix://`/`anilili://` handler itself on start (`system/url_handler.rs`: one hidden `.desktop` file in `$XDG_DATA_HOME/applications`, rewritten only when the AppImage it names is gone). Tests pass a temp data folder and never run `xdg-mime`.
 
 ## Release build (overview)
 
@@ -118,8 +120,10 @@ Notes:
    | `ANIX_LIBMPV_DIR` | Where step 1 put libmpv |
    | `ANIX_COMICK_CLIENT_ID` | Optional, compile time. Without it, the build has no Comick sign-in. Export it in your own shell. Never commit it. |
 
+3. `scripts/build-packages.sh` builds the DEB and RPM, which use the system's WebKitGTK and GStreamer, carry no libmpv and start with the web player. It takes the same `ANIX_SITE_URL`, `ANIX_BUILD_DIR` and `ANIX_COMICK_CLIENT_ID`. It runs the same home-folder check as the AppImage script and needs `rsync`, `dpkg-deb`, `rpm2cpio` and `cpio`. `packaging/aur/` holds the `anix-bin` PKGBUILD, which repackages the release DEB. At each release, set `pkgver`, then run `updpkgsums` and `makepkg --printsrcinfo > .SRCINFO`. All builds use the same data folders, so switching between them moves nothing.
+
 - Use the script for AppImages. A plain `tauri build` AppImage misses the bundled LGPL libmpv and may pick the wrong GStreamer plugins.
-- Release AppImages are built by `.github/workflows/release.yml` in an Ubuntu 22.04 container: an AppImage only runs on systems whose glibc is at least as new as the build system's, and this base (glibc 2.35) covers Ubuntu 22.04, Mint 21, Debian 12 and everything newer. The workflow fails if the result needs a newer glibc. It runs when the version or the build scripts change, keeps the file as a 30-day artifact, and on a pushed `v*` tag also publishes it as a GitHub release with that version's CHANGELOG section as notes. The website copy (Drive, MEGA) is still uploaded by the owner. A local build on a new distribution only runs on systems as new as that one. The Comick client id comes from the repository secret `ANIX_COMICK_CLIENT_ID`.
+- Release AppImages are built by `.github/workflows/release.yml` in an Ubuntu 22.04 container: an AppImage only runs on systems whose glibc is at least as new as the build system's, and this base (glibc 2.35) covers Ubuntu 22.04, Mint 21, Debian 12 and everything newer. The workflow fails if the result needs a newer glibc. It runs when the version or the build scripts change, keeps the file as a 30-day artifact, and on a pushed `v*` tag also publishes it as a GitHub release with that version's CHANGELOG section as notes. The website copy (Drive, MEGA) is still uploaded by the owner. A local build on a new distribution only runs on systems as new as that one. The Comick client id comes from the repository secret `ANIX_COMICK_CLIENT_ID`. The same workflow builds the DEB and RPM on Ubuntu 22.04, installs the DEB there and the RPM on Fedora to prove their dependencies resolve, and attaches both to the release.
 - The script stops if the home path or user name appears anywhere in the package. Do not weaken that check. Only CI sets `ANIX_CHECK_USER=''`, because its account name (`root`) appears in unrelated binaries; the home path is still checked there.
 - RPM and DEB builds bundle no libmpv and default to the web player.
 
@@ -133,7 +137,7 @@ Notes:
 
 ### Stream proxy (`stream_proxy.rs`)
 - Binds `127.0.0.1` on a random port. Every path starts with a 128-bit random token, and a wrong token gets 403. It is never an open proxy.
-- Only `GET`/`HEAD`/`OPTIONS`. Remote targets must be absolute `http(s)` URLs with a host.
+- Only `GET`/`HEAD`/`OPTIONS`. Remote targets must be absolute `http(s)` URLs with a host, on a public address (`clients/net_guard.rs`, see Extensions › Network). Tests with loopback upstreams use `start_allowing_private_upstream()`.
 - Local files are served **only** by a registered 32-hex key (`local_media::playable_path`), never by path.
 - The embedded player loads only stream-proxy URLs. Keep these limits when you add endpoints, and add a test in `stream_proxy_tests.rs`.
 
@@ -162,7 +166,8 @@ Notes:
 - **Every user-visible string goes through `t('key', vars)`** (or `tn` for text that has elements inside) from `src/i18n`. That includes `aria-label`, `title` and `placeholder`. Add the key to `locales/en.json`, which is the source and fallback. Other catalogs may lag behind.
 - Plurals are objects keyed by `Intl` plural category. Use `{name}` placeholders. Never build sentences out of pieces.
 - Never call `t()` at module load. Changing the language re-mounts the app.
-- Backend-shown text (notifications, tray, reminders) goes in `src-tauri/src/i18n.rs` for all 12 languages. Log lines stay in English.
+- Backend-shown text (notifications, tray, reminders, file-picker titles, the play-failure headline, native dialogs) goes in `src-tauri/src/i18n.rs` for all 12 languages. Log lines stay in English, and so do strings other code matches on.
+- Backend error messages are translated in the UI by their error code: `errorKeys` in `src/lib/errorCodes.ts` tries `errors.<code>`, then the HTTP class (`errors.CAT-4xx`), then the area (`errors.CAT-ERR`). Every code needs a text through that chain (checked by `i18n:test`).
 - Run `npm run i18n:check` and `npm run i18n:test` before you finish.
 
 ## Extensions
@@ -171,7 +176,8 @@ Notes:
 - Manifest fields: `id` (`[A-Za-z0-9_-]`, ≤ 64), `name`, `version`, `author`, `description`, `type`, `language` (`javascript` or `typescript`, transpiled with oxc), `lang`, optional `languages {sub?, dub?}` (ISO 639-1), `icon` (`https://` or `data:image/`), `payload` or `payloadURI`, `userConfig`, `changelog`.
 - Repositories: an https JSON list of manifests, `{name, plugins}`, or one manifest. Limits: 2 MB each for index, manifest and payload, and at most 200 plugins. `file://` repos are allowed only with `ANIX_DEV_PLUGIN_REPOS=1`.
 - **Sandbox** (`plugins/engine.rs`): one QuickJS runtime per plugin on its own thread, with memory/stack limits and an interrupt. No module loader, file system or process access. Load ≤ 10 s, timers ≤ 60 s, `$sleep` ≤ 2 s.
-- **Network** (`plugins/net.rs`): through the shared clients (DoH). Timeout 15 s by default, 30 s max. Responses ≤ 16 MB, requests ≤ 4 MB. **Private and loopback targets are denied** by host name and by resolved address. Do not add a way around that, except `plugin_run --allow-local` for local tests.
+- **Network** (`plugins/net.rs`): through the shared clients (DoH). Timeout 15 s by default, 30 s max. Responses ≤ 16 MB, requests ≤ 4 MB. **Private and loopback targets are denied** (`clients/net_guard.rs`): by the URL's host, by a resolver that drops private DNS answers before connecting, and on every redirect hop. The same guard covers the stream and subtitle links extensions return (stream checks in `providers/manager.rs`, the stream proxy's upstream, subtitles fetched for external players). `plugins/provider.rs` also drops stream and subtitle links whose host is written as a private address or `localhost`, so they never reach downloads or external players. Do not add a way around that, except `plugin_run --allow-local` and the test allowances (`allow_private_network`, `AnimeProvider::allows_private_network`).
+  - Known limits: requests made through the in-app browser session (`self.session.fetch` in `net.rs`) are checked only by the URL's host before sending; WebKit resolves names and follows redirects itself. ffmpeg, mpv and VLC resolve stream host names themselves, so a host name that resolves to a private address is not caught for downloads and external players. A proxy the user set in `HTTP(S)_PROXY`/`ALL_PROXY` is resolved without the filter (`net_guard::proxy_hosts`), so a local proxy given by name keeps working.
 - Globals live in `plugins/prelude.js` (`fetch`, `LoadDoc`, `CryptoJS`, `$store`, `$anix`, …). A new global needs a test in `plugin_engine_tests.rs`.
 - Try an extension in the real runtime:
   ```sh
@@ -196,6 +202,7 @@ New logic needs a test in the same change.
   - No live network. Use loopback servers on `127.0.0.1` and in-process fakes. A test that needs the network must be `#[ignore]`.
   - Name tests as sentences describing the behaviour (`loads_only_from_the_stream_proxy`).
   - Cover the refusal paths for anything at a trust boundary (proxy, plugin network, file paths, deep links, external players).
+  - A test that checks backend text in English calls `english_ui()` (`tests/english_ui/mod.rs`) first. Otherwise the text follows the machine's locale and settings, and the test reads the real `~/.config/anix`.
 - **TypeScript:** there is no test runner. Keep logic in pure functions in `src/lib/` or `src/i18n/core.ts`, and add `node:assert/strict` cases to `scripts/i18n-test.mjs` (or a similar node script).
 - **DB:** schema changes need a case in `db_tests.rs` that opens an older layout and checks that no rows are lost.
 

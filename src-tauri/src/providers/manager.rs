@@ -1,6 +1,7 @@
 use crate::cache::L1Cache;
 use crate::clients::anilist::MediaHint;
 use crate::clients::http::{http_client, no_redirect_client};
+use crate::clients::net_guard::{check_public_url, public_http_client, public_no_redirect_client};
 use crate::error::AppError;
 use crate::models::{AnimeQuery, Category, EpisodeItem, ProviderData, SourcesResult, StreamItem};
 use crate::providers::common::{fmt_ep, is_hls_url, with_session_allowance, SESSION_LOOKUP_ALLOWANCE};
@@ -20,8 +21,14 @@ use tokio::sync::OnceCell;
 use tokio::task::{JoinHandle, JoinSet};
 use tokio::time::timeout;
 
-/// Limit for one provider's episode listing.
-const EPISODES_TIMEOUT: Duration = Duration::from_secs(20);
+/// Limit for one provider's episode listing: the catalogue lookup for its titles, then an
+/// extension's search and its episode list, one after the other, each with its own limit. A
+/// shorter budget cut off slow sites that would have answered within those limits.
+pub const EPISODES_TIMEOUT: Duration = Duration::from_millis(
+    HINT_TIMEOUT.as_millis() as u64
+        + crate::plugins::provider::SEARCH_TIMEOUT.as_millis() as u64
+        + crate::plugins::provider::EPISODES_TIMEOUT.as_millis() as u64,
+);
 /// Limit for one provider's whole attempt at a play request: episode lookup, source
 /// resolution and stream verification. The race ends as soon as any provider delivers, so a
 /// slow site only costs this when nothing else plays.
@@ -185,7 +192,18 @@ async fn media_refusal(response: &mut reqwest::Response) -> Option<String> {
         .then(|| format!("{} answered with a web page instead of a video", host))
 }
 
-async fn fetch_playlist(client: &Client, url: &Url, stream: &StreamItem) -> Result<String, String> {
+/// Refuses a URL with a private host unless the provider was given the test allowance. A
+/// literal IP never reaches the resolver filter, so every URL is checked before it is sent.
+fn guard(url: &Url, allow_private: bool) -> Result<(), String> {
+    if allow_private {
+        Ok(())
+    } else {
+        check_public_url(url)
+    }
+}
+
+async fn fetch_playlist(client: &Client, url: &Url, stream: &StreamItem, allow_private: bool) -> Result<String, String> {
+    guard(url, allow_private)?;
     let request = apply_stream_headers(client.get(url.clone()), stream).timeout(VERIFY_REQUEST_TIMEOUT);
     let mut response = request.send().await.map_err(transport_reason)?;
     let host = host_of(&response);
@@ -224,20 +242,21 @@ fn head_of_text(text: &str) -> &str {
     &text[..end]
 }
 
-async fn check_hls(stream: &StreamItem, url: Url) -> Result<(), String> {
-    let client = http_client().map_err(|e| e.reason())?;
+async fn check_hls(stream: &StreamItem, url: Url, allow_private: bool) -> Result<(), String> {
+    let client = if allow_private { http_client() } else { public_http_client() }.map_err(|e| e.reason())?;
 
-    let playlist = fetch_playlist(&client, &url, stream).await?;
+    let playlist = fetch_playlist(&client, &url, stream, allow_private).await?;
     let first = first_playlist_uri(&playlist).ok_or("empty playlist")?;
     let mut target = url.join(first).map_err(|_| "playlist entry is not a URL")?;
 
     let is_master = playlist.contains("#EXT-X-STREAM-INF") || target.path().ends_with(".m3u8");
     if is_master {
-        let media_playlist = fetch_playlist(&client, &target, stream).await?;
+        let media_playlist = fetch_playlist(&client, &target, stream, allow_private).await?;
         let segment = first_playlist_uri(&media_playlist).ok_or("empty media playlist")?;
         target = target.join(segment).map_err(|_| "segment entry is not a URL")?;
     }
 
+    guard(&target, allow_private)?;
     let request = apply_stream_headers(client.get(target).header(RANGE, "bytes=0-2047"), stream)
         .timeout(VERIFY_REQUEST_TIMEOUT);
     let mut response = request.send().await.map_err(transport_reason)?;
@@ -247,11 +266,13 @@ async fn check_hls(stream: &StreamItem, url: Url) -> Result<(), String> {
     }
 }
 
-async fn check_file(stream: &StreamItem, url: Url) -> Result<(), String> {
+async fn check_file(stream: &StreamItem, url: Url, allow_private: bool) -> Result<(), String> {
     // Redirects are followed by hand so the stream's own headers go out on every hop.
-    let client = no_redirect_client().map_err(|e| e.reason())?;
+    let client = if allow_private { no_redirect_client() } else { public_no_redirect_client() }
+        .map_err(|e| e.reason())?;
     let mut current = url;
     for _ in 0..6 {
+        guard(&current, allow_private)?;
         let request = apply_stream_headers(client.get(current.clone()).header(RANGE, "bytes=0-2047"), stream)
             .timeout(VERIFY_REQUEST_TIMEOUT);
         let mut response = request.send().await.map_err(transport_reason)?;
@@ -273,7 +294,7 @@ async fn check_file(stream: &StreamItem, url: Url) -> Result<(), String> {
     Err("too many redirects".to_string())
 }
 
-async fn check_stream(stream: &StreamItem) -> Result<(), String> {
+async fn check_stream(stream: &StreamItem, allow_private: bool) -> Result<(), String> {
     let url = Url::parse(&stream.url).map_err(|_| "invalid stream URL".to_string())?;
     if !matches!(url.scheme(), "http" | "https") {
         return Err("unsupported URL scheme".to_string());
@@ -285,9 +306,9 @@ async fn check_stream(stream: &StreamItem) -> Result<(), String> {
         let mut pauses = RESET_RETRY_PAUSES.iter();
         loop {
             let result = if is_file {
-                check_file(stream, url.clone()).await
+                check_file(stream, url.clone(), allow_private).await
             } else {
-                check_hls(stream, url.clone()).await
+                check_hls(stream, url.clone(), allow_private).await
             };
             match (&result, pauses.next()) {
                 (Err(reason), Some(pause)) if is_connection_reset(reason) => tokio::time::sleep(*pause).await,
@@ -302,15 +323,17 @@ async fn check_stream(stream: &StreamItem) -> Result<(), String> {
 }
 
 /// True when the stream's playlist and first segment (or the file's first bytes) can be fetched
-/// with the headers the stream asks for.
-pub async fn verify_stream_segment(stream: &StreamItem) -> bool {
-    check_stream(stream).await.is_ok()
+/// with the headers the stream asks for. Streams come from extensions, so private and loopback
+/// hosts are refused unless `allow_private` is set (tests and the dev runner only).
+pub async fn verify_stream_segment(stream: &StreamItem, allow_private: bool) -> bool {
+    check_stream(stream, allow_private).await.is_ok()
 }
 
 /// Checks the streams concurrently and returns as soon as one is confirmed playable: that
 /// stream first, then the others in their original order as unverified fallbacks. When none
-/// passes, the error is the reason the first-choice stream failed.
-pub async fn verify_streams(streams: Vec<StreamItem>) -> Result<Vec<StreamItem>, String> {
+/// passes, the error is the reason the first-choice stream failed. `allow_private` as in
+/// `verify_stream_segment`.
+pub async fn verify_streams(streams: Vec<StreamItem>, allow_private: bool) -> Result<Vec<StreamItem>, String> {
     if streams.is_empty() {
         return Err("no streams".to_string());
     }
@@ -323,7 +346,7 @@ pub async fn verify_streams(streams: Vec<StreamItem>) -> Result<Vec<StreamItem>,
     let mut checks = JoinSet::new();
     for &idx in &order {
         let shared = shared.clone();
-        checks.spawn(async move { (idx, check_stream(&shared[idx]).await) });
+        checks.spawn(async move { (idx, check_stream(&shared[idx], allow_private).await) });
     }
 
     let mut winner: Option<usize> = None;
@@ -366,7 +389,7 @@ pub async fn verify_streams(streams: Vec<StreamItem>) -> Result<Vec<StreamItem>,
 
 /// Like `verify_streams`, but the caller's order is a preference: all streams are checked at
 /// once and the earliest one that passes is put first, even when a later one answered sooner.
-pub async fn verify_streams_in_order(streams: Vec<StreamItem>) -> Result<Vec<StreamItem>, String> {
+pub async fn verify_streams_in_order(streams: Vec<StreamItem>, allow_private: bool) -> Result<Vec<StreamItem>, String> {
     if streams.is_empty() {
         return Err("no streams".to_string());
     }
@@ -374,7 +397,7 @@ pub async fn verify_streams_in_order(streams: Vec<StreamItem>) -> Result<Vec<Str
     let checks: Vec<AbortOnDrop<Result<(), String>>> = (0..shared.len().min(MAX_VERIFIED_STREAMS))
         .map(|idx| {
             let shared = shared.clone();
-            AbortOnDrop(tokio::spawn(async move { check_stream(&shared[idx]).await }))
+            AbortOnDrop(tokio::spawn(async move { check_stream(&shared[idx], allow_private).await }))
         })
         .collect();
 
@@ -493,20 +516,24 @@ pub fn main_failure(failures: &[(String, String)]) -> FailureKind {
     kinds.into_iter().min_by_key(|kind| rank(kind)).unwrap_or(FailureKind::Other)
 }
 
-/// The failure in plain words, as the first line of the message the player shows.
+/// The failure in plain words, in English (logs, tests); see [`explain_failure_in`].
 pub fn explain_failure(kind: &FailureKind, category: &Category) -> String {
-    match kind {
-        FailureKind::Verification => "The site asks you to pass its check first. Press Verify, then the episode is tried again.".to_string(),
-        FailureKind::Removed => "The site removed this video.".to_string(),
-        FailureKind::UnreadableHost(hosts) => format!("This episode is only on video hosts the extensions can't read ({}).", hosts),
-        FailureKind::TooSlow => "The sites are too slow to answer right now. Try again in a moment.".to_string(),
-        FailureKind::Unreachable => {
-            "The sites could not be reached. Your network may block them; DNS over HTTPS in Settings › Network can help.".to_string()
-        }
-        FailureKind::NotListed if *category == Category::Dub => "No installed extension has this episode in dub.".to_string(),
-        FailureKind::NotListed => "No installed extension has this episode.".to_string(),
-        FailureKind::Other => "The extensions answered, but none gave a stream that plays.".to_string(),
-    }
+    explain_failure_in("en", kind, category)
+}
+
+/// The failure in plain words in `lang`, as the first line of the message the player shows.
+pub fn explain_failure_in(lang: &str, kind: &FailureKind, category: &Category) -> String {
+    let key = match kind {
+        FailureKind::Verification => "play_verify",
+        FailureKind::Removed => "play_removed",
+        FailureKind::UnreadableHost(hosts) => return crate::i18n::fill(lang, "play_unreadable_host", &[("hosts", hosts)]),
+        FailureKind::TooSlow => "play_too_slow",
+        FailureKind::Unreachable => "play_unreachable",
+        FailureKind::NotListed if *category == Category::Dub => "play_not_listed_dub",
+        FailureKind::NotListed => "play_not_listed",
+        FailureKind::Other => "play_other",
+    };
+    crate::i18n::text(lang, key).to_string()
 }
 
 /// When a stream or listing was last asked for, or a video piece went through the stream
@@ -630,10 +657,11 @@ fn shape_listing(provider: &dyn AnimeProvider, mut data: ProviderData, prefs: Op
 }
 
 fn no_language_error(prefs: &LanguagePrefs, category: &Category) -> AppError {
-    AppError::SourcesUnavailable(format!(
-        "No enabled plugin offers {}. Choose other languages, or allow plugins in other languages, in Settings › Sources.",
-        prefs.describe(category)
-    ))
+    let lang = crate::i18n::current();
+    let languages = crate::i18n::language_list(lang, prefs.for_category(category));
+    let wanted_key = if *category == Category::Dub { "wanted_dub" } else { "wanted_sub" };
+    let wanted = crate::i18n::fill(lang, wanted_key, &[("languages", &languages)]);
+    AppError::SourcesUnavailable(crate::i18n::fill(lang, "play_no_language", &[("wanted", &wanted)]))
 }
 
 /// What a lookup fails with when there is no provider at all.
@@ -849,7 +877,7 @@ impl Inner {
         }
 
         if !provider.verifies_streams() {
-            sources.streams = verify_streams(sources.streams)
+            sources.streams = verify_streams(sources.streams, provider.allows_private_network())
                 .await
                 .map_err(|reason| AppError::provider(name, format!("stream check failed: {}", reason)))?;
         }
@@ -1109,7 +1137,12 @@ impl ProviderManager {
                     }
                 }));
                 let outcome = match timeout(EPISODES_TIMEOUT, listing).await {
-                    Err(_) => Err("timed out".to_string()),
+                    Err(_) => {
+                        // A site that hangs this long is skipped by the next pages opened for a
+                        // while, so it does not hold every episode list back again.
+                        inner.note_unreachable(site);
+                        Err("timed out".to_string())
+                    }
                     Ok(Err(join_err)) => {
                         tracing::error!("episode listing task failed: {}", join_err);
                         Err("internal error".to_string())
@@ -1190,10 +1223,10 @@ impl ProviderManager {
                     .position(|p| p.name() == wanted)
                     .or_else(|| lineup.iter().position(|p| p.name().eq_ignore_ascii_case(wanted)))
                     .ok_or_else(|| {
-                        AppError::SourcesUnavailable(format!(
-                            "No source found. Unknown provider '{}'",
-                            wanted
-                        ))
+                        // Like the main failure: plain words in the interface language first,
+                        // the English reason under it for Details.
+                        let plain = crate::i18n::fill(crate::i18n::current(), "play_unknown_provider", &[("name", wanted)]);
+                        AppError::SourcesUnavailable(format!("{}\nNo source found. Unknown provider '{}'", plain, wanted))
                     })?;
                 vec![Tier { language: None, members: vec![idx] }]
             }
@@ -1278,22 +1311,25 @@ impl ProviderManager {
             .into_iter()
             .map(|f| (f.name.to_string(), f.reason))
             .collect();
-        // First line: the reason in plain words; the rest is the list per provider, for Details.
-        let plain = explain_failure(&main_failure(&listed), &category);
-        let mut message = format!("{}\nNo source found. {}", plain, summarize_failures(&listed));
+        // First line: the reason in plain words, in the interface language; the rest is the
+        // list per provider, for Details (and the log, which stays English).
+        let kind = main_failure(&listed);
+        let mut details = format!("No source found. {}", summarize_failures(&listed));
         if let (None, Some(prefs), true) = (preferred, &prefs, left_out) {
-            message.push_str(&format!(
+            details.push_str(&format!(
                 ". Only plugins with {} were asked; Settings › Sources can allow other languages.",
                 prefs.describe(&category)
             ));
         }
         tracing::warn!(
-            "no source for anime {} episode {} ({}): {}",
+            "no source for anime {} episode {} ({}): {}\n{}",
             anilist_id,
             fmt_ep(episode_number),
             category.as_str(),
-            message
+            explain_failure(&kind, &category),
+            details
         );
-        Err(AppError::SourcesUnavailable(message))
+        let plain = explain_failure_in(crate::i18n::current(), &kind, &category);
+        Err(AppError::SourcesUnavailable(format!("{}\n{}", plain, details)))
     }
 }

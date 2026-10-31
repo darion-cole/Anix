@@ -27,8 +27,15 @@ const rowName = (record: DownloadRecord) =>
 
 const sizeOrZero = (bytes: number) => formatBytes(bytes) || t('downloads.zeroSize');
 
+/** The stored quality: the words Anix saves ("best", "auto") in the interface language, a
+ * resolution or a site's own label as it is. */
+const qualityLabel = (quality: string) => {
+  const word = quality.trim().toLowerCase();
+  return word === 'best' ? t('bulkDownloadDialog.best') : word === 'auto' ? t('common.auto') : quality;
+};
+
 const details = (record: DownloadRecord) =>
-  [episodeLabel(record.episode_num), record.quality, downloadLanguageLabel(record)].join(' · ');
+  [episodeLabel(record.episode_num), qualityLabel(record.quality), downloadLanguageLabel(record)].join(' · ');
 
 /** A poster with a progress ring over it while the episode is queued or downloading. */
 const PosterWithRing: React.FC<{ record: DownloadRecord; size?: 'sm' | 'lg' }> = ({ record, size = 'sm' }) => {
@@ -133,8 +140,8 @@ const DiskUsage: React.FC<{ savedBytes: number }> = ({ savedBytes }) => {
   );
 };
 
-/** The download running now, larger, at the top. */
-const CurrentBanner: React.FC<{ record: DownloadRecord }> = ({ record }) => {
+/** The download running now, larger, at the top; `children` are its buttons. */
+const CurrentBanner: React.FC<{ record: DownloadRecord; children?: React.ReactNode }> = ({ record, children }) => {
   const percent = Math.round(fractionOf(record) * 100);
   return (
     <section aria-label={t('downloads.downloadingNow')} className="flex items-center gap-4 rounded-xl ui-card bg-accent-tint p-4">
@@ -158,6 +165,7 @@ const CurrentBanner: React.FC<{ record: DownloadRecord }> = ({ record }) => {
           {record.file_size ? ` · ${formatBytes(record.file_size)}` : ''}
         </p>
       </div>
+      <div className="flex flex-shrink-0 items-center gap-1">{children}</div>
     </section>
   );
 };
@@ -334,7 +342,7 @@ export const Downloads: React.FC = () => {
         />
       ) : (
         <>
-          {running[0] && <CurrentBanner record={running[0]} />}
+          {running[0] && <CurrentBanner record={running[0]}>{removeButton(running[0])}</CurrentBanner>}
 
           {running.length > 1 && (
             <Group title={t('downloads.alsoDownloading')} count={running.length - 1}>

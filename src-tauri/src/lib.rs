@@ -110,6 +110,7 @@ pub fn run() {
                     notices::init(app.handle().clone());
                     notifier::start(app.handle().clone());
                     system::apply(app.handle(), system::SystemSettings::read());
+                    system::url_handler::register_for_appimage();
                     let args: Vec<String> = std::env::args().collect();
                     system::tray::hide_if_started_minimised(app.handle(), &args);
                     let pool = app.state::<AppState>().pool.clone();
@@ -122,15 +123,16 @@ pub fn run() {
                         tracing::error!("{}", e);
                     }
                     embedded_mpv::install(app.handle());
+                    #[cfg(target_os = "linux")]
+                    system::page_crash::watch(app.handle());
                 }
                 Err(e) => {
                     tracing::error!("Failed to initialize database: {}", e);
                     let handle = app.handle().clone();
+                    // i18n reads settings.json and the locale, not the database, so this works.
+                    let text = crate::i18n::text(crate::i18n::current(), "db_open_failed");
                     app.dialog()
-                        .message(format!(
-                            "Anix could not open its database and has to close.\n\n{}",
-                            e
-                        ))
+                        .message(format!("{}\n\n{}", text, e))
                         .title("Anix")
                         .kind(MessageDialogKind::Error)
                         .show(move |_| handle.exit(1));
@@ -176,6 +178,7 @@ pub fn run() {
             commands::get_watched_episodes,
             commands::get_episode_progress,
             commands::get_continue_watching,
+            commands::get_watch_history,
             commands::update_watch_progress,
             commands::add_to_watchlist,
             commands::remove_from_watchlist,
@@ -200,7 +203,7 @@ pub fn run() {
             // Downloads
             commands::create_download,
             commands::start_episode_download,
-            commands::update_download_status,
+            commands::retry_download,
             commands::get_all_downloads,
             commands::delete_download,
             commands::check_storage_for_download,
@@ -262,6 +265,7 @@ pub fn run() {
             embedded_mpv::embedded_mpv_engine_changed,
             embedded_mpv::embedded_mpv_restart,
             embedded_mpv::embedded_mpv_take_route,
+            embedded_mpv::web_player_active,
             embedded_mpv::embedded_mpv_clear_cache,
             // Custom Playlists & Queue
             commands::create_playlist,
@@ -278,6 +282,12 @@ pub fn run() {
             commands::cancel_account_login,
             commands::get_comick_library,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while running tauri application")
+        .run(|app, event| {
+            if let tauri::RunEvent::Exit = event {
+                embedded_mpv::on_exit();
+                system::restart_if_asked(app);
+            }
+        });
 }
