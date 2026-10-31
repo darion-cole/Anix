@@ -17,6 +17,12 @@ set -euo pipefail
 
 root="${ANIX_LIBMPV_DIR:-$HOME/.cache/anix-build/libmpv-macos}"
 case "$root" in *" "*) echo "ANIX_LIBMPV_DIR must not contain spaces: $root" >&2; exit 1 ;; esac
+mkdir -p "$root"
+# Everything is built through a short link: FFmpeg keeps its configure line (with the flags
+# below) in the library, and the real folder would carry the home folder and user name.
+root_link="/tmp/anix-libmpv-root-$(id -u)"
+ln -sfn "$(cd "$root" && pwd -P)" "$root_link"
+root="$root_link"
 jobs="${JOBS:-$(sysctl -n hw.ncpu)}"
 src="$root/src"
 out="$root/out"
