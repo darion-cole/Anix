@@ -112,14 +112,17 @@ grep -q '^#define CONFIG_NONFREE 0' "$src/ffmpeg/config.h" || { echo "FFmpeg is 
 grep -q 'FFMPEG_LICENSE "LGPL version 2.1 or later"' "$src/ffmpeg/config.h" || { echo "FFmpeg is not LGPL 2.1+; refusing." >&2; exit 1; }
 make -C "$src/ffmpeg" -j"$jobs" && make -C "$src/ffmpeg" install
 
-# --- mpv (LGPL-2.1+ with -Dgpl=false), Objective-C Cocoa without Swift ----------------------
+# --- mpv (LGPL-2.1+ with -Dgpl=false), without Cocoa -------------------------------------
+# Anix draws through the render API into its own OpenGL view, so mpv needs no window code: plain-gl
+# is mpv's OpenGL "for libmpv". (Its Cocoa code also needs Swift since 0.41.) Hardware decoding
+# uses VideoToolbox with copy-back, which needs no Cocoa interop.
 step "mpv $MPV_TAG"
 clone https://github.com/mpv-player/mpv.git "$MPV_TAG" mpv
 meson_lib "$src/mpv" -Dgpl=false -Dlibmpv=true -Dcplayer=false \
   -Dlua=disabled -Djavascript=disabled -Dlibarchive=disabled -Dlibbluray=disabled -Ddvdnav=disabled \
   -Dcdda=disabled -Duchardet=disabled -Drubberband=disabled -Dvapoursynth=disabled -Dzimg=disabled \
   -Dlcms2=disabled -Djpeg=disabled -Dvulkan=disabled -Dx11=disabled -Dwayland=disabled -Degl=disabled \
-  -Dcocoa=enabled -Dgl=enabled -Dgl-cocoa=enabled -Dvideotoolbox-gl=enabled -Dvideotoolbox-pl=disabled \
+  -Dcocoa=disabled -Dgl=enabled -Dgl-cocoa=disabled -Dplain-gl=enabled -Dvideotoolbox-gl=disabled -Dvideotoolbox-pl=disabled \
   -Dswift-build=disabled -Dmacos-cocoa-cb=disabled -Dmacos-media-player=disabled -Dmacos-touchbar=disabled \
   -Dcoreaudio=enabled -Davfoundation=disabled -Daudiounit=disabled \
   -Dmanpage-build=disabled -Dhtml-build=disabled -Dpdf-build=disabled
