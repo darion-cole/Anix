@@ -1,0 +1,61 @@
+name: macOS libmpv
+
+# Builds the LGPL libmpv set for the macOS embedded player (scripts/build-libmpv-lgpl-macos.sh) and
+# keeps it in the Actions cache, keyed on the script, so app builds reuse it instead of spending
+# most of an hour on FFmpeg and mpv. The set is also uploaded as an artifact for inspection.
+on:
+  push:
+    branches: [mac-embedded-mpv]
+    paths:
+      - scripts/build-libmpv-lgpl-macos.sh
+      - .github/workflows/macos-libmpv.yml
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  libmpv:
+    name: Build libmpv (Apple Silicon, LGPL)
+    runs-on: macos-15
+    timeout-minutes: 90
+    env:
+      ANIX_LIBMPV_DIR: ${{ github.workspace }}/../libmpv-macos
+      # The runner's account name (runner) appears in unrelated binaries; the home folder is still checked.
+      ANIX_CHECK_USER: ''
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Restore the built set
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.ANIX_LIBMPV_DIR }}/out
+          key: libmpv-macos-${{ hashFiles('scripts/build-libmpv-lgpl-macos.sh') }}
+
+      - name: Install build tools
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          brew install nasm pkgconf
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet meson ninja jinja2
+          echo "$RUNNER_TEMP/venv/bin" >> "$GITHUB_PATH"
+
+      - name: Build libmpv
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: scripts/build-libmpv-lgpl-macos.sh
+
+      - name: Show the set
+        run: |
+          ls -la "$ANIX_LIBMPV_DIR/out/Frameworks"
+          du -sh "$ANIX_LIBMPV_DIR/out/Frameworks"
+          cat "$ANIX_LIBMPV_DIR/out/licenses/BUILD-LICENSE.txt"
+
+      - name: Upload the set
+        uses: actions/upload-artifact@v4
+        with:
+          name: libmpv-macos
+          path: ${{ env.ANIX_LIBMPV_DIR }}/out
