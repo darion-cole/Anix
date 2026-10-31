@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Entitlements of the macOS app (tauri.macos.conf.json). -->
+<plist version="1.0">
+<dict>
+	<!-- The embedded player loads the LGPL libmpv set from Contents/Frameworks. The app is signed
+	     ad hoc (no Apple developer team), so the hardened runtime's library validation would
+	     refuse those libraries as coming from "a different team"; this allows them. -->
+	<key>com.apple.security.cs.disable-library-validation</key>
+	<true/>
+</dict>
+</plist>

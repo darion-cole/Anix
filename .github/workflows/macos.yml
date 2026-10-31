@@ -123,6 +123,8 @@ jobs:
           app=$(ls -d src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app | head -n1)
           ls -la "$app/Contents/Frameworks"
           test -f "$app/Contents/Frameworks/libmpv.2.dylib"
+          # Without this entitlement the hardened runtime refuses the ad-hoc signed libmpv.
+          codesign -d --entitlements - "$app" 2>&1 | tee /dev/stderr | grep -q disable-library-validation
 
       - name: Package the release files
         id: pkg
