@@ -4,9 +4,12 @@ name: macOS build
 # fork's latest release: the .dmg for a first install, plus the app as .app.tar.gz and
 # mac-update.json, which the app's Settings › Check for updates reads to update itself in place.
 # The backend tests can run on macOS first (RUN_MAC_TESTS below); a failure stops the release.
+# The embedded player's LGPL libmpv (scripts/build-libmpv-lgpl-macos.sh) comes from the Actions
+# cache filled by macos-libmpv.yml and is bundled in Contents/Frameworks. Pushes to other
+# branches (mac-embedded-mpv) build a test .dmg as an artifact and publish nothing.
 on:
   push:
-    branches: [macos]
+    branches: [macos, mac-embedded-mpv]
     # Documentation-only commits change nothing in the app, so they make no new build.
     paths-ignore:
       - '**.md'
@@ -24,6 +27,8 @@ concurrency:
 env:
   # The backend tests on macOS before each release ('true' runs them).
   RUN_MAC_TESTS: 'false'
+  ANIX_LIBMPV_DIR: ${{ github.workspace }}/../libmpv-macos
+  ANIX_CHECK_USER: ''
 
 jobs:
   build:
@@ -64,6 +69,37 @@ jobs:
           restore-keys: |
             macos-cargo-
 
+      - name: Restore libmpv
+        id: libmpv
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.ANIX_LIBMPV_DIR }}/out
+          key: libmpv-macos-${{ hashFiles('scripts/build-libmpv-lgpl-macos.sh') }}
+
+      # Only when the cache is empty (a changed script whose macos-libmpv.yml run has not
+      # finished): the full build, which takes most of an hour.
+      - name: Build libmpv
+        if: steps.libmpv.outputs.cache-hit != 'true'
+        run: |
+          brew install nasm pkgconf
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet meson ninja jinja2
+          PATH="$RUNNER_TEMP/venv/bin:$PATH" scripts/build-libmpv-lgpl-macos.sh
+
+      - name: Add libmpv to the app
+        run: |
+          set -euo pipefail
+          rm -rf src-tauri/mac-frameworks src-tauri/libmpv-licenses
+          mkdir -p src-tauri/mac-frameworks src-tauri/libmpv-licenses
+          cp "$ANIX_LIBMPV_DIR"/out/Frameworks/*.dylib src-tauri/mac-frameworks/
+          cp "$ANIX_LIBMPV_DIR"/out/licenses/* src-tauri/libmpv-licenses/
+          # The set's file names carry library versions, so the bundle list is made here.
+          (cd src-tauri && ls mac-frameworks/*.dylib) | jq -R . | jq -s \
+            '{bundle: {macOS: {frameworks: .}, resources: ["resources/anime4k/*", "libmpv-licenses/*"]}}' \
+            > src-tauri/tauri.libmpv.conf.json
+          cat src-tauri/tauri.libmpv.conf.json
+          du -sh src-tauri/mac-frameworks
+
       # A failing test stops here, before anything is built or published, so the app's
       # Check for updates is never offered a build that fails on macOS.
       # Turned off for now to make builds faster; set RUN_MAC_TESTS to 'true' to turn it back on.
@@ -80,7 +116,13 @@ jobs:
           # Read at compile time by src-tauri/src/clients/mac_update.rs.
           ANIX_MAC_UPDATE_REPO: ${{ github.repository }}
           ANIX_MAC_BUILD: ${{ github.run_number }}
-        run: npx --no-install tauri build --target aarch64-apple-darwin
+        run: npx --no-install tauri build --target aarch64-apple-darwin --config src-tauri/tauri.libmpv.conf.json
+
+      - name: Check libmpv is in the app
+        run: |
+          app=$(ls -d src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app | head -n1)
+          ls -la "$app/Contents/Frameworks"
+          test -f "$app/Contents/Frameworks/libmpv.2.dylib"
 
       - name: Package the release files
         id: pkg
@@ -131,10 +173,11 @@ jobs:
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Anix-macOS
+          name: Anix-macOS-${{ github.ref_name }}
           path: ${{ steps.pkg.outputs.dmg }}
 
       - name: Publish release
+        if: github.ref == 'refs/heads/macos'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.pkg.outputs.tag }}

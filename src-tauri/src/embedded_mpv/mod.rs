@@ -12,6 +12,8 @@
 pub mod ffi;
 #[cfg(target_os = "linux")]
 mod layer;
+#[cfg(target_os = "macos")]
+mod layer_macos;
 pub mod policy;
 #[cfg(target_os = "linux")]
 mod selftest;
@@ -375,6 +377,10 @@ fn emit_status_changed() {
 /// builds load the LGPL build bundled with the AppImage (`scripts/build-libmpv-lgpl.sh`) and
 /// otherwise the system's (RPM/DEB), which must pass the same LGPL check.
 fn library_path() -> Result<String, String> {
+    // The macOS app keeps the LGPL set (scripts/build-libmpv-lgpl-macos.sh) in Contents/Frameworks.
+    #[cfg(target_os = "macos")]
+    return macos_library_path();
+    #[allow(unreachable_code)]
     if cfg!(debug_assertions) {
         return Ok("libmpv.so.2".to_string());
     }
@@ -382,6 +388,16 @@ fn library_path() -> Result<String, String> {
     let dir = exe.parent().ok_or("The app folder is unknown")?;
     let bundled = dir.join("../lib/anix/libmpv.so.2");
     Ok(if bundled.exists() { bundled.to_string_lossy().into_owned() } else { "libmpv.so.2".to_string() })
+}
+
+#[cfg(target_os = "macos")]
+fn macos_library_path() -> Result<String, String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let bundled = exe.parent().ok_or("The app folder is unknown")?.join("../Frameworks/libmpv.2.dylib");
+    if bundled.exists() {
+        return Ok(bundled.to_string_lossy().into_owned());
+    }
+    Err("This build of Anix has no embedded player (libmpv is not in the app)".to_string())
 }
 
 fn settings_path() -> Option<PathBuf> {
@@ -402,11 +418,22 @@ fn engine_setting(settings: &Value) -> String {
 /// Release RPM/DEB builds have no LGPL libmpv of their own (only the AppImage bundles one), so
 /// they start on the web player instead of announcing a fallback on every run.
 fn default_engine() -> &'static str {
+    // The macOS app bundles libmpv whenever it was built with it.
+    if cfg!(target_os = "macos") {
+        return if macos_has_libmpv() { "mpv" } else { "web" };
+    }
     if cfg!(debug_assertions) || std::env::var_os("APPIMAGE").is_some() {
         "mpv"
     } else {
         "web"
     }
+}
+
+fn macos_has_libmpv() -> bool {
+    #[cfg(target_os = "macos")]
+    return macos_library_path().is_ok();
+    #[allow(unreachable_code)]
+    false
 }
 
 fn set_engine_setting(engine: &str) -> Result<(), String> {
@@ -478,9 +505,9 @@ fn load_lib() -> Result<&'static ffi::Lib, String> {
 
 fn decision() -> &'static Start {
     DECISION.get_or_init(|| {
-        // The embedded player is drawn through GTK, which only the Linux build has, so macOS
-        // always uses the web player (and never switches to mpv after a crash).
-        if cfg!(not(target_os = "linux")) {
+        // The embedded player is drawn through GTK on Linux and through `layer_macos` on macOS;
+        // other systems always use the web player (and never switch to mpv after a crash).
+        if cfg!(not(any(target_os = "linux", target_os = "macos"))) {
             return Start::Web { reason: None };
         }
         let forced = forced_web();
@@ -638,6 +665,9 @@ pub fn pause_from_backend() {
 /// The app quits normally: the web player is not playing any more. Removes the marker whatever
 /// the flag says, so a clean exit never leaves one behind.
 pub fn on_exit() {
+    // mpv's render context must be freed before mpv itself goes.
+    #[cfg(target_os = "macos")]
+    layer_macos::detach();
     *WEB_PLAYBACK.lock().unwrap_or_else(|p| p.into_inner()) = false;
     if let Some(Err(e)) = web_playback_marker().map(|path| remove_marker(&path)) {
         tracing::warn!("The web playback marker could not be removed: {}", e);
@@ -858,6 +888,11 @@ fn start(app: &AppHandle) -> Result<(), String> {
     {
         let window = app.get_webview_window("main").ok_or("The main window is missing")?;
         layer::attach(&window, lib, handle)?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let window = app.get_webview_window("main").ok_or("The main window is missing")?;
+        layer_macos::attach(&window, lib, handle)?;
     }
     let _ = PLAYER.set(player);
     let app = app.clone();

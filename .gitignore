@@ -123,3 +123,6 @@ release/
 *.AppImage
 *.deb
 *.rpm
+src-tauri/mac-frameworks/
+src-tauri/libmpv-licenses/
+src-tauri/tauri.libmpv.conf.json

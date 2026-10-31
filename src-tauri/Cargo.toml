@@ -62,6 +62,12 @@ anitomy-ng = "1.0.10"
 # Already part of Tauri's tree; used to place the embedded mpv GL area under the webview.
 gtk = "0.18"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+# Already part of Tauri's tree; used to place the embedded mpv OpenGL view under the webview
+# (src/embedded_mpv/layer_macos.rs).
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSOpenGL", "NSView", "NSResponder", "NSGraphics", "objc2-core-foundation"] }
+
 [dev-dependencies]
 futures-util = "0.3"
 # Paused test clock, so budgets of tens of seconds are tested without waiting for them.

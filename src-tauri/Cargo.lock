@@ -87,6 +87,8 @@ dependencies = [
  "md-5",
  "moka",
  "notify-rust",
+ "objc2",
+ "objc2-app-kit",
  "once_cell",
  "oxc_allocator",
  "oxc_codegen",
