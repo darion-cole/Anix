@@ -118,6 +118,20 @@ make -C "$src/ffmpeg" -j"$jobs" && make -C "$src/ffmpeg" install
 # uses VideoToolbox with copy-back, which needs no Cocoa interop.
 step "mpv $MPV_TAG"
 clone https://github.com/mpv-player/mpv.git "$MPV_TAG" mpv
+# The CoreAudio output calls cfstr_from_cstr from osdep/utils-mac.c (CoreFoundation only), which
+# mpv's meson.build only compiles together with Cocoa; compile it with the audio output too.
+python3 -I - "$src/mpv/meson.build" <<'PY'
+import sys
+path = sys.argv[1]
+text = open(path).read()
+marker = "    # anix: osdep/utils-mac.c without Cocoa"
+if marker not in text:
+    old = "                     'audio/out/ao_coreaudio_utils.c')\nendif\n"
+    assert old in text, "mpv's CoreAudio sources moved; update the patch"
+    text = text.replace(old, "                     'audio/out/ao_coreaudio_utils.c')\n" + marker
+                        + "\n    if not features['cocoa']\n        sources += files('osdep/utils-mac.c')\n    endif\nendif\n", 1)
+    open(path, "w").write(text)
+PY
 meson_lib "$src/mpv" -Dgpl=false -Dlibmpv=true -Dcplayer=false \
   -Dlua=disabled -Djavascript=disabled -Dlibarchive=disabled -Dlibbluray=disabled -Ddvdnav=disabled \
   -Dcdda=disabled -Duchardet=disabled -Drubberband=disabled -Dvapoursynth=disabled -Dzimg=disabled \
