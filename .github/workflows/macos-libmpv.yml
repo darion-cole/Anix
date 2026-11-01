@@ -5,7 +5,7 @@ name: macOS libmpv
 # most of an hour on FFmpeg and mpv. The set is also uploaded as an artifact for inspection.
 on:
   push:
-    branches: [mac-embedded-mpv]
+    branches: [macos, mac-embedded-mpv]
     paths:
       - scripts/build-libmpv-lgpl-macos.sh
       - .github/workflows/macos-libmpv.yml

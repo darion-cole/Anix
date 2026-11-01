@@ -31,10 +31,10 @@ brew install --cask vlc
 
 | Feature | macOS |
 |---|---|
-| Video player | The built-in web player only. The embedded mpv player is Linux-only (it draws through GTK). |
-| Local `.mkv` files | macOS's web view cannot play MKV. Use **Open in mpv/VLC** for those. MP4 and streams play in the app. |
+| Video player | Embedded mpv, as on Linux: the app bundles an LGPL libmpv and draws the video under the page (`embedded_mpv/layer_macos.rs`). Settings › Playback › Player engine can switch to the web player, and Anix falls back to it by itself when mpv cannot start. |
+| Local `.mkv` files | Play in the embedded player. (The web player cannot play MKV.) |
 | External mpv / VLC | Works. Anix finds Homebrew programs and `VLC.app` even when started from the Dock. |
-| Anime4K upscaling | Applies in external mpv: choose it in the player's settings (Upscaling), then open the episode in mpv. |
+| Anime4K upscaling | Works in the embedded player, and in external mpv. Fast, Balanced and HQ; Balanced (macOS fork addition) keeps HQ's first stage at about half its GPU load. |
 | Media keys / lock screen controls | Not available (Linux MPRIS). |
 | Release notifications | Shown, but clicking one does not open the anime. |
 | "Alerts while Anix is closed" | Not functional on macOS (it uses Linux login services). |
@@ -94,7 +94,17 @@ The changes are small and kept in a few places, so most upstream releases merge 
   (`updateDialog.installHintMac` in every locale).
 - `src-tauri/src/notifier.rs`: notifications without the Linux click action.
 - `src-tauri/src/mpris.rs`: MPRIS commands do nothing on macOS.
-- `src-tauri/src/embedded_mpv/mod.rs`: always the web player on macOS.
+- `src-tauri/src/embedded_mpv/mod.rs`: `layer_macos` on macOS, the bundled libmpv path
+  (`macos_library_path`), and the engine default; `layer_macos.rs` (new) draws the video on a
+  render thread under the webview.
+- `scripts/build-libmpv-lgpl-macos.sh`, `.github/workflows/macos-libmpv.yml` (both new): the LGPL
+  libmpv for Apple Silicon, cached in Actions and bundled in `Contents/Frameworks` by `macos.yml`.
+- `src-tauri/Entitlements.plist`: `disable-library-validation`, so the ad-hoc signed app may load
+  its bundled libmpv.
+- `src-tauri/Cargo.toml`: `objc2`/`objc2-app-kit` for macOS only.
+- `embedded_mpv/policy.rs`, `src/lib/anime4k.ts`, `PlayerSettingsPanel.tsx`: the Balanced quality
+  (`playerSettingsPanel.balanced` in every locale); `policy.rs` also uses `demuxer-cache-dir`
+  (mpv 0.41 dropped `cache-dir`, which broke the disk cache on every system).
 - `src-tauri/src/commands/player.rs`: `host_program`, finding mpv/VLC/ffmpeg on macOS.
 - `src-tauri/src/commands/player.rs`: `desktop_opener`, `open` instead of `xdg-open` for links,
   sign-in and folders (used by `open_in_browser` there and by `commands/system.rs`).
@@ -106,3 +116,22 @@ The changes are small and kept in a few places, so most upstream releases merge 
   Anime4K for external mpv.
 - `src-tauri/src/system/mod.rs`: `on_ui_main_thread`, the macOS main-thread check used by `restart`
   (upstream asks GTK, which macOS does not have).
+
+## Libraries bundled in the macOS app
+
+The embedded player's libraries are built from source by `scripts/build-libmpv-lgpl-macos.sh`
+and their licence texts ship in `Anix.app/Contents/Resources/libmpv-licenses`:
+
+| Component | Licence |
+|---|---|
+| mpv (built with `-Dgpl=false`) | LGPL-2.1+ |
+| FFmpeg (no GPL or non-free parts) | LGPL-2.1+ |
+| libplacebo | LGPL-2.1+ |
+| FriBidi | LGPL-2.1+ |
+| libass | ISC |
+| HarfBuzz | MIT |
+| FreeType | FreeType License (FTL) |
+| dav1d | BSD-2-Clause |
+
+They are dynamically linked and replaceable (in `Contents/Frameworks`), as the LGPL asks.
+Portions of this software are copyright © The FreeType Project (https://freetype.org). All rights reserved.
