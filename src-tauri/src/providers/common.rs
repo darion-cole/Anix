@@ -43,7 +43,7 @@ static PLAIN_BLOCKED: Lazy<Mutex<HashMap<&'static str, Instant>>> = Lazy::new(||
 
 pub fn plain_blocked_recently(site: &'static str) -> bool {
     let guard = PLAIN_BLOCKED.lock().unwrap_or_else(|p| p.into_inner());
-    guard.get(site).map_or(false, |at| at.elapsed() < PLAIN_BLOCK_MEMORY)
+    guard.get(site).is_some_and(|at| at.elapsed() < PLAIN_BLOCK_MEMORY)
 }
 
 pub fn note_plain_blocked(site: &'static str) {
@@ -94,14 +94,6 @@ pub fn session_referrer(headers: &HeaderMap, request_url: &reqwest::Url) -> Opti
     let referer = headers.get(reqwest::header::REFERER)?.to_str().ok()?;
     let referer = reqwest::Url::parse(referer).ok()?;
     (referer.origin() == request_url.origin()).then(|| path_and_query(&referer))
-}
-
-/// The text of a body in the character set its `Content-Type` declares (UTF-8 when it declares
-/// none or one that is unknown). A byte order mark decides over the declaration.
-pub fn decode_text(content_type: Option<&str>, body: &[u8]) -> String {
-    let encoding = declared_charset(content_type).unwrap_or(encoding_rs::UTF_8);
-    let (text, _, _) = encoding.decode(body);
-    text.into_owned()
 }
 
 /// The character set named by a `Content-Type` value, when it names one that is known.

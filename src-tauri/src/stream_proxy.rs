@@ -10,10 +10,8 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use once_cell::sync::{Lazy, OnceCell};
 use regex::Regex;
-use std::collections::hash_map::RandomState;
 use std::collections::HashMap;
-use std::hash::{BuildHasher, Hasher};
-use std::io::Read;
+use std::io::{Read, Write};
 use std::sync::Arc;
 use std::time::Duration;
 use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
@@ -279,16 +277,6 @@ pub fn subtitle_to_vtt(body: &str) -> String {
     }
 }
 
-fn random_token() -> String {
-    // RandomState is seeded from the OS; two independent states give 128 unpredictable bits.
-    let part = || {
-        let mut hasher = RandomState::new().build_hasher();
-        hasher.write_u128(std::process::id() as u128);
-        hasher.finish()
-    };
-    format!("{:016x}{:016x}", part(), part())
-}
-
 fn header(name: &str, value: &str) -> Option<Header> {
     Header::from_bytes(name.as_bytes(), value.as_bytes()).ok()
 }
@@ -321,7 +309,7 @@ fn respond_text(request: Request, status: u16, message: &str) {
         Some(length),
         None,
     );
-    let _ = request.respond(response);
+    respond(request, response);
 }
 
 fn respond_bytes(request: Request, status: u16, content_type: &str, body: Vec<u8>) {
@@ -336,7 +324,7 @@ fn respond_bytes(request: Request, status: u16, content_type: &str, body: Vec<u8
         Some(length),
         None,
     );
-    let _ = request.respond(response);
+    respond(request, response);
 }
 
 /// Streams an upstream body to the webview without buffering the whole file.
@@ -366,7 +354,9 @@ impl Read for BodyReader {
     }
 }
 
-async fn read_limited(mut response: reqwest::Response, limit: usize) -> Result<Vec<u8>, String> {
+/// Reads the body, refusing it once more than `limit` bytes arrive, with or without a
+/// `Content-Length`.
+pub async fn read_limited(mut response: reqwest::Response, limit: usize) -> Result<Vec<u8>, String> {
     let mut body = Vec::new();
     while let Some(chunk) = response.chunk().await.map_err(|e| e.to_string())? {
         if body.len() + chunk.len() > limit {
@@ -416,6 +406,49 @@ async fn fetch_upstream(
 /// is not told the length cannot seek, nor play a file whose index sits at its end.
 fn sized<R: Read>(response: Response<R>) -> Response<R> {
     response.with_chunked_threshold(usize::MAX)
+}
+
+/// Sends `response`, adding `Connection: close` when the client asked for it. tiny_http then
+/// closes the connection without saying so (it drops a `Connection` header), and FFmpeg 8.1
+/// sends its next request on a connection it read to the end unless told it closes: the seek
+/// back from an MP4 index at the end of the file then fails, and mpv plays nothing.
+fn respond<R: Read>(request: Request, response: Response<R>) {
+    let closes = request_header(&request, "Connection").is_some_and(|v| v.to_ascii_lowercase().contains("close"));
+    if !closes {
+        let _ = request.respond(response);
+        return;
+    }
+    let version = request.http_version().clone();
+    let headers = request.headers().to_vec();
+    let head = *request.method() == Method::Head;
+    let mut writer = AnnounceClose { inner: request.into_writer(), done: false };
+    // As `Request::respond`: a client that went away (seek, episode change) is not an error.
+    let _ = response.raw_print(&mut writer, version, &headers, head, None).and_then(|()| writer.flush());
+}
+
+/// Writes `Connection: close` right after the status line, the first line of what is written.
+struct AnnounceClose<W> {
+    inner: W,
+    done: bool,
+}
+
+impl<W: Write> Write for AnnounceClose<W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        if self.done {
+            return self.inner.write(buf);
+        }
+        let end = buf.iter().position(|&b| b == b'\n').map_or(buf.len(), |i| i + 1);
+        self.inner.write_all(&buf[..end])?;
+        if buf[..end].ends_with(b"\n") {
+            self.inner.write_all(b"Connection: close\r\n")?;
+            self.done = true;
+        }
+        Ok(end)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
 }
 
 fn request_header(request: &Request, name: &'static str) -> Option<String> {
@@ -506,7 +539,7 @@ fn handle_proxy(request: Request, target: Url, params: UpstreamParams, proxy_bas
     };
 
     if head {
-        let _ = request.respond(sized(Response::new(
+        respond(request, sized(Response::new(
             StatusCode(status),
             headers,
             std::io::empty(),
@@ -547,7 +580,7 @@ fn handle_proxy(request: Request, target: Url, params: UpstreamParams, proxy_bas
         position: 0,
     };
     // A dropped connection (seek, episode change) ends the copy; that is not an error.
-    let _ = request.respond(sized(Response::new(StatusCode(status), headers, reader, length, None)));
+    respond(request, sized(Response::new(StatusCode(status), headers, reader, length, None)));
 }
 
 fn handle_subtitle(request: Request, target: Url, params: UpstreamParams, upstream: Upstream) {
@@ -602,7 +635,7 @@ fn handle_local_video(request: Request, key: &str) {
         Ok(None) => (200, 0, size),
         Err(()) => {
             headers.extend(header("Content-Range", &format!("bytes */{}", size)));
-            let _ = request.respond(Response::new(
+            respond(request, Response::new(
                 StatusCode(416),
                 headers,
                 std::io::empty(),
@@ -614,7 +647,7 @@ fn handle_local_video(request: Request, key: &str) {
     };
 
     if *request.method() == Method::Head {
-        let _ = request.respond(sized(Response::new(
+        respond(request, sized(Response::new(
             StatusCode(status),
             headers,
             std::io::empty(),
@@ -627,7 +660,7 @@ fn handle_local_video(request: Request, key: &str) {
         return respond_text(request, 500, "The file could not be read");
     }
     // A dropped connection (seek, episode change) ends the copy; that is not an error.
-    let _ = request.respond(sized(Response::new(
+    respond(request, sized(Response::new(
         StatusCode(status),
         headers,
         file.take(length),
@@ -673,7 +706,7 @@ fn route_local(request: Request, endpoint: &str) -> Option<Request> {
 
 fn handle_request(request: Request, token: &str, proxy_base: &str, upstream: Upstream) {
     if *request.method() == Method::Options {
-        let _ = request.respond(Response::new(
+        respond(request, Response::new(
             StatusCode(204),
             cors_headers(),
             std::io::empty(),
@@ -756,7 +789,8 @@ fn start_with(upstream: Upstream) -> Result<String, String> {
                 .to_ip()
                 .map(|addr| addr.port())
                 .ok_or_else(|| "Stream proxy has no TCP address".to_string())?;
-            let token = random_token();
+            let token = crate::system::random::hex(16)
+                .map_err(|e| format!("Failed to start stream proxy: {}", e))?;
             let base = format!("http://127.0.0.1:{}/{}", port, token);
 
             let server = Arc::new(server);

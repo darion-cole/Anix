@@ -1,5 +1,5 @@
 import React, { useId, useState } from 'react';
-import { Puzzle, RefreshCw, Trash2 } from 'lucide-react';
+import { Puzzle, RefreshCw, Settings2, Trash2 } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
 import { CustomSelect } from '../components/CustomSelect';
 import { ThemePicker } from '../components/ThemePicker';
@@ -13,11 +13,12 @@ import { ReleaseCheckSettings } from '../components/settings/ReleaseCheckSetting
 import { LanguagePreferences } from '../components/settings/LanguagePreferences';
 import { AppLanguageRow } from '../components/setup/AppLanguage';
 import { audioOnlyLabel, pluginLanguageSummary } from '../lib/languages';
-import { HealthBadge, PluginDirectory, UpdateBadge } from '../components/settings/PluginTools';
+import { HealthBadge, HealthDot, PluginDirectory, UpdateBadge } from '../components/settings/PluginTools';
 import { PluginConfigDialog } from '../components/settings/PluginConfigDialog';
 import { ServerOrder } from '../components/settings/ServerOrder';
 import { usePluginHealth, usePluginUpdates, PLUGIN_UPDATES_KEY, type HealthState } from '../hooks/usePluginHealth';
 import { useTheme } from '../hooks/useTheme';
+import { useDesktopStatus } from '../hooks/useSystem';
 import { useSiteVerification } from '../hooks/useSiteVerification';
 import { Button } from '../components/ui/Button';
 import { Switch } from '../components/ui/Switch';
@@ -49,6 +50,7 @@ import { useUIStore } from '../stores/uiStore';
 import type { AppSettings, CatalogueSource, DohMode, DohProvider, ExternalPlayer, PluginInfo, PluginRepo, PluginUpdate } from '../types';
 import { PlayerEngineSettings } from '../components/settings/PlayerEngineSettings';
 import { locale, t } from '../i18n';
+import { Meme, MemeFrame, MemeImage, useHighModule } from '../components/meme/Meme';
 
 // Episodes always open in the built-in player; this picks the program used outside it.
 const PLAYER_OPTIONS: { value: ExternalPlayer; label: string }[] = [
@@ -202,6 +204,7 @@ const PluginRow: React.FC<{
         <PluginIcon src={plugin.icon} />
         <div className="min-w-0 flex-1">
           <p className="flex flex-wrap items-baseline gap-x-2">
+            <HealthDot state={health} />
             <span id={nameId} className="text-[13px] font-medium text-text-primary select-text">
               {name}
             </span>
@@ -223,17 +226,6 @@ const PluginRow: React.FC<{
         {onTest && plugin.enabled && health && health !== 'testing' && health.status === 'verification' && (
           <PluginVerifyButton provider={plugin.id} name={name} onVerified={() => onTest(plugin)} />
         )}
-        {onConfigure && plugin.configurable && (
-          <Button
-            variant="ghost"
-            size="sm"
-            className="mt-0.5"
-            aria-label={t('settings.settingsOf', { name })}
-            onClick={() => onConfigure(plugin)}
-          >
-            {t('common.settings')}
-          </Button>
-        )}
         {onTest && plugin.enabled && (
           <Button
             variant="ghost"
@@ -243,7 +235,20 @@ const PluginRow: React.FC<{
             disabled={health === 'testing'}
             onClick={() => onTest(plugin)}
           >
-            {t('settings.test')}
+            <Meme spot="test" plain={t('settings.test')} />
+          </Button>
+        )}
+        {onConfigure && plugin.configurable && (
+          <Button
+            icon
+            variant="ghost"
+            size="sm"
+            className="mt-0.5"
+            aria-label={t('settings.settingsOf', { name })}
+            title={t('settings.settingsOf', { name })}
+            onClick={() => onConfigure(plugin)}
+          >
+            <Settings2 aria-hidden="true" className="h-4 w-4" />
           </Button>
         )}
         <Switch
@@ -254,14 +259,22 @@ const PluginRow: React.FC<{
         />
       </div>
       {failed && (
-        <div role="alert" className="mt-2 rounded-md bg-state-error/10 px-3 py-2">
-          <p className="text-xs font-medium text-state-error">
-            {t(plugin.enabled ? 'settings.loadFailedNotUsed' : 'settings.loadFailed')}
-          </p>
-          <p className="mt-0.5 max-h-24 overflow-y-auto whitespace-pre-wrap break-words text-xs text-text-secondary select-text">
-            {plugin.error?.trim() || t('settings.noReason')}
-          </p>
+        <div role="alert" className="mt-2 flex items-start gap-3 rounded-md bg-state-error/10 px-3 py-2">
+          <MemeFrame spot="crash" className="meme-row-sm" />
+          <div className="min-w-0 flex-1">
+            <p className="text-xs font-medium text-state-error">
+              <Meme spot="crash" plain={t(plugin.enabled ? 'settings.loadFailedNotUsed' : 'settings.loadFailed')} />
+            </p>
+            <p className="mt-0.5 max-h-24 overflow-y-auto whitespace-pre-wrap break-words text-xs text-text-secondary select-text">
+              {plugin.error?.trim() || t('settings.noReason')}
+            </p>
+          </div>
         </div>
+      )}
+      {plugin.paused && !failed && (
+        <p className="mt-2 break-words text-xs text-text-muted select-text">
+          {t('settings.pluginPaused', { reason: plugin.paused })}
+        </p>
       )}
       {plugin.stale && !failed && (
         <p className="mt-2 break-words text-xs text-text-muted select-text">{t('settings.pluginStale')}</p>
@@ -273,7 +286,14 @@ const PluginRow: React.FC<{
   );
 };
 
+/** High's divergence-meter look for the version: 1.4.0 → 1.400000 (decoration; the row says the version). */
+const nixie = (version: string) => {
+  const [major, ...rest] = version.split(/[.+-]/);
+  return `${major}.${rest.join('').replace(/\D/g, '').padEnd(6, '0').slice(0, 6)}`;
+};
+
 /** Settings → Plugins: the repositories streaming plugins are downloaded from, and their plugins. */
+
 const PluginsSection: React.FC = () => {
   const showToast = useUIStore((s) => s.showToast);
   const reposQuery = usePluginRepos();
@@ -287,6 +307,7 @@ const PluginsSection: React.FC = () => {
   const setPluginEnabled = useSetPluginEnabled();
   const queryClient = useQueryClient();
   const pluginHealth = usePluginHealth();
+  const high = useHighModule();
   const updatesQuery = usePluginUpdates(repos.length > 0);
   const updates = new Map((updatesQuery.data ?? []).map((u) => [u.id, u]));
 
@@ -440,7 +461,7 @@ const PluginsSection: React.FC = () => {
             <p className="text-text-muted">{t('settings.downloadingRepo')}</p>
           ) : (
             <p className="text-text-muted">
-              {t('settings.repoLinkHelp')}
+              <Meme spot="addPlugin" plain={t('settings.repoLinkHelp')} />
             </p>
           )}
         </div>
@@ -448,8 +469,15 @@ const PluginsSection: React.FC = () => {
 
       {loading ? (
         <div aria-busy="true" className="flex items-center gap-2 py-4 text-xs text-text-muted">
-          <Spinner size="sm" label={t('settings.loadingPlugins')} />
-          {t('settings.loadingPluginsEllipsis')}
+          {high ? (
+            // High: the Spirit Bomb's glow stands in for the spinner (the text below says it is loading).
+            <span className="meme-spirit">
+              <MemeImage name="goku-spirit-bomb" />
+            </span>
+          ) : (
+            <Spinner size="sm" label={t('settings.loadingPlugins')} />
+          )}
+          <Meme spot="loadingPl" plain={t('settings.loadingPluginsEllipsis')} />
         </div>
       ) : reposQuery.isError && nothingAdded ? (
         <ErrorState
@@ -466,6 +494,7 @@ const PluginsSection: React.FC = () => {
         <EmptyState
           className="py-10"
           icon={<Puzzle aria-hidden="true" />}
+          meme="noPlugins"
           title={t('settings.noPlugins')}
           description={t('settings.noPluginsHint')}
         />
@@ -499,7 +528,7 @@ const PluginsSection: React.FC = () => {
                 ) : (
                   <RefreshCw aria-hidden="true" className="h-3.5 w-3.5" />
                 )}
-                {t('settings.refreshAll')}
+                <Meme spot="refresh" plain={t('settings.refreshAll')} />
               </Button>
               </div>
             )}
@@ -626,6 +655,7 @@ const PluginsSection: React.FC = () => {
                 : t('settings.removeRepoNoPlugins')}{' '}
               {t('settings.addAgain')}
             </p>
+            <MemeFrame spot="cantUndo" className="meme-cant-undo" />
           </div>
         )}
       </Modal>
@@ -645,10 +675,12 @@ export const Settings: React.FC = () => {
 
   const { refetch: checkUpdateNow } = useCheckUpdate();
   const { data: appVersion } = useAppVersion();
+  const high = useHighModule();
   const [isCheckingUpdate, setIsCheckingUpdate] = useState(false);
 
   const accountsQuery = useAccountStatus();
   const { theme, setTheme } = useTheme();
+  const flatpak = useDesktopStatus().data?.flatpak === true;
 
   if (settingsQuery.isLoading) {
     return (
@@ -726,7 +758,7 @@ export const Settings: React.FC = () => {
     <SettingsShell>
         <Section title={t('settingsLayout.appearance')} id="appearance">
           <AppLanguageRow />
-          <Row label={t('settings.theme')} hint={t('settings.themeHint')} stacked>
+          <Row label={t('settings.theme')} hint={t('settings.themeHint')} meme="theme" stacked>
             {({ labelId, hintId }) => (
               <ThemePicker
                 aria-labelledby={labelId}
@@ -759,7 +791,7 @@ export const Settings: React.FC = () => {
               />
             )}
           </Row>
-          <Row label={t('settings.skipIntros')} hint={t('settings.skipIntrosHint')}>
+          <Row label={t('settings.skipIntros')} hint={t('settings.skipIntrosHint')} meme="skipIntro">
             {({ labelId, hintId }) => (
               <Switch
                 aria-labelledby={labelId}
@@ -769,7 +801,7 @@ export const Settings: React.FC = () => {
               />
             )}
           </Row>
-          <Row label={t('settings.skipEndings')} hint={t('settings.skipEndingsHint')}>
+          <Row label={t('settings.skipEndings')} hint={t('settings.skipEndingsHint')} meme="skipOutro">
             {({ labelId, hintId }) => (
               <Switch
                 aria-labelledby={labelId}
@@ -794,13 +826,14 @@ export const Settings: React.FC = () => {
           </Row>
           <Row
             label={t('settings.externalPlayer')}
-            hint={t('settings.externalPlayerHint')}
+            hint={flatpak ? t('systemSection.notInFlatpak') : t('settings.externalPlayerHint')}
           >
             {({ labelId, hintId }) => (
               <CustomSelect
                 aria-labelledby={labelId}
                 aria-describedby={hintId}
                 className="w-52"
+                disabled={flatpak}
                 value={externalPlayer}
                 onChange={(value) => {
                   if (isOneOf(value, PLAYER_OPTIONS)) updateSetting('external_player', value);
@@ -888,6 +921,7 @@ export const Settings: React.FC = () => {
           <Row
             label={t('settings.catalogueSource')}
             hint={t('settings.catalogueSourceHint')}
+            meme="catSource"
           >
             {({ labelId, hintId }) => (
               <CustomSelect
@@ -940,6 +974,12 @@ export const Settings: React.FC = () => {
         <BackupSection />
 
         <Section title={t('settingsLayout.about')} id="about">
+          {high && (
+            <div aria-hidden="true" className="flex flex-col items-start gap-2 pb-2">
+              <MemeImage name="okabe-el-psy-kongroo" className="meme-okabe" />
+              {appVersion && <span className="meme-nixie">{nixie(appVersion)}</span>}
+            </div>
+          )}
           <Row label="Anix" hint={appVersion ? t('settings.version', { version: appVersion }) : undefined}>
             {() => (
               <Button variant="secondary" size="sm" onClick={handleCheckUpdate} disabled={isCheckingUpdate}>
@@ -948,6 +988,7 @@ export const Settings: React.FC = () => {
               </Button>
             )}
           </Row>
+          {high && <high.MemeCredits />}
         </Section>
 
         {/* Last: with many plugins this list is long and would bury the sections above. */}

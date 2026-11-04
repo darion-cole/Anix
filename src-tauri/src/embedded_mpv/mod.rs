@@ -365,6 +365,8 @@ fn set_status(status: Result<(), String>) {
         tracing::warn!("Embedded mpv is not available, the web player is used: {}", e);
     }
     *STATUS.lock().unwrap_or_else(|p| p.into_inner()) = Some(status);
+    // A page that asked while start-up was still running asks again (it got "not available").
+    emit_status_changed();
 }
 
 fn emit_status_changed() {
@@ -380,7 +382,7 @@ fn library_path() -> Result<String, String> {
     // The macOS app keeps the LGPL set (scripts/build-libmpv-lgpl-macos.sh) in Contents/Frameworks.
     #[cfg(target_os = "macos")]
     return macos_library_path();
-    #[allow(unreachable_code)]
+    #[allow(unreachable_code, reason = "macOS returns above")]
     if cfg!(debug_assertions) {
         return Ok("libmpv.so.2".to_string());
     }
@@ -432,7 +434,7 @@ fn default_engine() -> &'static str {
 fn macos_has_libmpv() -> bool {
     #[cfg(target_os = "macos")]
     return macos_library_path().is_ok();
-    #[allow(unreachable_code)]
+    #[allow(unreachable_code, reason = "macOS returns above")]
     false
 }
 
@@ -547,6 +549,7 @@ fn decision() -> &'static Start {
 fn forced_web() -> Option<String> {
     let args: Vec<String> = std::env::args().collect();
     policy::forced_web(&args, std::env::var("ANIX_PLAYER_ENGINE").ok().as_deref())
+        .or_else(|| crate::system::safe_mode::active().then(|| "Anix started in safe mode.".to_string()))
 }
 
 fn web_playback_marker() -> Option<PathBuf> {
@@ -592,7 +595,7 @@ fn take_stale_web_playback() -> bool {
 }
 
 fn pid_is_anix(pid: u32) -> bool {
-    std::fs::read_to_string(format!("/proc/{pid}/comm")).is_ok_and(|name| name.trim_end() == "anix")
+    crate::system::process::is_anix(pid)
 }
 
 /// Moves the setting to embedded mpv after a crash during web playback, when this build can
@@ -1147,7 +1150,8 @@ pub async fn embedded_mpv_take_route() -> Option<String> {
         route = s.reopen.take();
         s
     });
-    route
+    // Safe mode does not go back to the screen that may have caused the crashes.
+    route.filter(|_| !crate::system::safe_mode::active())
 }
 
 /// Empties the on-disk video cache folder; returns the bytes freed.

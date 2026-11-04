@@ -20,6 +20,7 @@ import {
   VolumeX,
 } from 'lucide-react';
 import { IconButton } from './IconButton';
+import { Meme, useMemeText, type MemeSpot } from '../meme/Meme';
 import { PlayerTimeline } from './PlayerTimeline';
 import { Slider } from './Slider';
 import { t } from '../../i18n';
@@ -66,19 +67,28 @@ interface PlayerControlsProps {
   onToggleMiniPlayer: () => void;
   /** Absent when the webview has no picture-in-picture. */
   onPictureInPicture?: () => void;
+  /** Play, pause, seeking and episode steps are the watch party host's. */
+  locked?: boolean;
 }
 
-/** A control-bar button with its name written next to the icon. */
+/**
+ * One of the four big control-bar buttons, with its name written next to the icon. The name
+ * drops on narrow windows (the 960 px minimum), where the icon and its tooltip remain.
+ */
 const LabelledButton: React.FC<{
   label: string;
+  /** Meme mode › High: the meme as a small caption over the name. */
+  spot?: MemeSpot;
   title?: string;
   onClick: () => void;
   active?: boolean;
   children: React.ReactNode;
-}> = ({ label, title, onClick, active, children }) => (
+}> = ({ label, spot, title, onClick, active, children }) => (
   <IconButton label={label} title={title} active={active} onClick={onClick} className="gap-1.5">
     {children}
-    <span aria-hidden="true">{label}</span>
+    <span aria-hidden="true" className="hidden min-[1120px]:inline">
+      {spot ? <Meme spot={spot} plain={label} /> : label}
+    </span>
   </IconButton>
 );
 
@@ -106,16 +116,20 @@ export const PlayerControls: React.FC<PlayerControlsProps> = ({
   onToggleFullscreen,
   onToggleMiniPlayer,
   onPictureInPicture,
+  locked = false,
 }) => {
   const silent = muted || volume === 0;
   const shownVolume = silent ? 0 : volume;
   const VolumeIcon = silent ? VolumeX : volume < 0.5 ? Volume1 : Volume2;
+  // High: the meme with the plain words in each tooltip; the accessible names stay plain.
+  const memeText = useMemeText();
 
   return (
     <div
       // The scrim is already dense behind the seek bar, so the controls stay readable over a bright frame.
-      className={`pointer-events-none absolute inset-x-0 bottom-0 z-20 bg-gradient-to-t from-black/90 via-black/60 to-transparent pt-16 transition-opacity duration-200 ${
-        visible ? 'opacity-100' : 'opacity-0'
+      // Hidden, it fades and slides down a little; it only moves when it shows or hides, never while idle.
+      className={`pointer-events-none absolute inset-x-0 bottom-0 z-20 bg-gradient-to-t from-black/90 via-black/60 to-transparent pt-16 transition-[opacity,transform] duration-200 ease-out ${
+        visible ? 'opacity-100' : 'translate-y-3 opacity-0'
       }`}
     >
       {/* A mouse press must not move focus onto a control, or Space would press it again. */}
@@ -124,15 +138,16 @@ export const PlayerControls: React.FC<PlayerControlsProps> = ({
         className={`flex flex-col gap-1 px-4 pb-3 ${visible ? 'pointer-events-auto' : ''}`}
         onMouseDown={(e) => e.preventDefault()}
       >
-        <PlayerTimeline videoRef={videoRef} duration={duration} onSeek={onSeek} />
+        <PlayerTimeline videoRef={videoRef} duration={duration} onSeek={onSeek} locked={locked} />
 
         <div className="flex items-center justify-between gap-2">
-          {/* Three groups on each side: episode and play, seek, volume | panels, playback options. */}
+          {/* Three groups on each side: episode and play, seek, volume | the four big panels (Episodes,
+              Subtitles, Server, Settings), playback options. */}
           <div className="flex items-center gap-3">
             <div className="flex items-center gap-1">
               <IconButton
                 label={t('playerControls.previousEpisode')}
-                title={previous?.label ?? t('playerControls.noPreviousEpisode')}
+                title={memeText('prev', previous?.label ?? t('playerControls.noPreviousEpisode'))}
                 disabled={!previous}
                 onClick={previous?.onClick}
               >
@@ -140,7 +155,14 @@ export const PlayerControls: React.FC<PlayerControlsProps> = ({
               </IconButton>
               <IconButton
                 label={playing ? t('common.pause') : t('common.play')}
-                title={playing ? t('playerControls.pauseWithKey') : t('playerControls.playWithKey')}
+                title={
+                  locked
+                    ? t('party.hostControls')
+                    : playing
+                      ? memeText('pause', t('playerControls.pauseWithKey'))
+                      : memeText('play', t('playerControls.playWithKey'))
+                }
+                disabled={locked}
                 onClick={onTogglePlay}
               >
                 {playing ? (
@@ -151,7 +173,7 @@ export const PlayerControls: React.FC<PlayerControlsProps> = ({
               </IconButton>
               <IconButton
                 label={t('playerControls.nextEpisode')}
-                title={next?.label ?? t('playerControls.noNextEpisode')}
+                title={memeText('next', next?.label ?? t('playerControls.noNextEpisode'))}
                 disabled={!next}
                 onClick={next?.onClick}
               >
@@ -162,14 +184,16 @@ export const PlayerControls: React.FC<PlayerControlsProps> = ({
             <div className="flex items-center gap-1">
               <IconButton
                 label={t('playerControls.back10')}
-                title={t('playerControls.back10WithKey')}
+                title={memeText('rew', t('playerControls.back10WithKey'))}
+                disabled={locked}
                 onClick={() => onSeekBy(-10)}
               >
                 <RotateCcw aria-hidden="true" className="h-4 w-4" />
               </IconButton>
               <IconButton
                 label={t('playerControls.forward10')}
-                title={t('playerControls.forward10WithKey')}
+                title={memeText('ff', t('playerControls.forward10WithKey'))}
+                disabled={locked}
                 onClick={() => onSeekBy(10)}
               >
                 <RotateCw aria-hidden="true" className="h-4 w-4" />
@@ -179,7 +203,7 @@ export const PlayerControls: React.FC<PlayerControlsProps> = ({
             <div className="flex items-center gap-1">
               <IconButton
                 label={silent ? t('playerControls.unmute') : t('playerControls.mute')}
-                title={silent ? t('playerControls.unmuteWithKey') : t('playerControls.muteWithKey')}
+                title={silent ? t('playerControls.unmuteWithKey') : memeText('mute', t('playerControls.muteWithKey'))}
                 onClick={onToggleMute}
               >
                 <VolumeIcon aria-hidden="true" className="h-4 w-4" />
@@ -198,9 +222,6 @@ export const PlayerControls: React.FC<PlayerControlsProps> = ({
 
           <div className="flex items-center gap-3">
             <div className="flex items-center gap-1">
-              <LabelledButton label={t('playerControls.server')} title={t('playerControls.changeServer')} onClick={onOpenServers}>
-                <Server aria-hidden="true" className="h-4 w-4" />
-              </LabelledButton>
               <LabelledButton
                 label={t('common.episodes')}
                 title={queuedCount > 0 ? t('playerControls.episodesQueued', { count: queuedCount }) : t('common.episodes')}
@@ -211,13 +232,27 @@ export const PlayerControls: React.FC<PlayerControlsProps> = ({
               </LabelledButton>
               <LabelledButton
                 label={t('playerControls.subtitles')}
+                spot="subsBtn"
                 title={t('playerControls.subtitlesAndAudio')}
                 active={subtitlesOn}
                 onClick={onOpenSubtitles}
               >
                 <Captions aria-hidden="true" className="h-4 w-4" />
               </LabelledButton>
-              <LabelledButton label={t('common.settings')} title={t('playerControls.settingsHint')} onClick={onOpenSettings}>
+              <LabelledButton
+                label={t('playerControls.server')}
+                spot="serverBtn"
+                title={t('playerControls.changeServer')}
+                onClick={onOpenServers}
+              >
+                <Server aria-hidden="true" className="h-4 w-4" />
+              </LabelledButton>
+              <LabelledButton
+                label={t('common.settings')}
+                spot="setBtn"
+                title={t('playerControls.settingsHint')}
+                onClick={onOpenSettings}
+              >
                 <Settings aria-hidden="true" className="h-4 w-4" />
               </LabelledButton>
             </div>
@@ -230,14 +265,18 @@ export const PlayerControls: React.FC<PlayerControlsProps> = ({
               )}
               <IconButton
                 label={t('playerControls.miniPlayer')}
-                title={t('playerControls.miniPlayerHint')}
+                title={memeText('mini', t('playerControls.miniPlayerHint'))}
                 onClick={onToggleMiniPlayer}
               >
                 <PictureInPicture aria-hidden="true" className="h-4 w-4" />
               </IconButton>
               <IconButton
                 label={isFullscreen ? t('playerControls.exitFullscreen') : t('playerControls.fullscreen')}
-                title={isFullscreen ? t('playerControls.exitFullscreenWithKey') : t('playerControls.fullscreenWithKey')}
+                title={
+                  isFullscreen
+                    ? t('playerControls.exitFullscreenWithKey')
+                    : memeText('full', t('playerControls.fullscreenWithKey'))
+                }
                 onClick={onToggleFullscreen}
               >
                 {isFullscreen ? (

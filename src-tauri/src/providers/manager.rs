@@ -108,13 +108,6 @@ pub fn first_playlist_uri(playlist: &str) -> Option<&str> {
         .find(|line| !line.is_empty() && !line.starts_with('#'))
 }
 
-/// Resolves a playlist entry against the playlist's own URL: absolute, protocol-relative,
-/// root-relative and path-relative entries all follow the usual URL rules.
-pub fn resolve_playlist_uri(playlist_url: &str, entry: &str) -> Option<String> {
-    let base = Url::parse(playlist_url).ok()?;
-    base.join(entry.trim()).ok().map(|u| u.to_string())
-}
-
 fn host_of(response: &reqwest::Response) -> String {
     response.url().host_str().unwrap_or("unknown host").to_string()
 }
@@ -424,6 +417,35 @@ pub async fn verify_streams_in_order(streams: Vec<StreamItem>, allow_private: bo
     Ok(streams)
 }
 
+/// Sent as the `sources-progress` event while a source lookup runs, once per extension and
+/// state, so the player can show which ones are still being asked.
+#[derive(Debug, Clone, serde::Serialize, PartialEq)]
+pub struct LookupProgress {
+    pub anilist_id: i64,
+    pub episode: f64,
+    pub category: &'static str,
+    /// The extension's id.
+    pub provider: String,
+    /// `asking`, `failed` or `found`.
+    pub state: &'static str,
+}
+
+pub const EVENT_SOURCES_PROGRESS: &str = "sources-progress";
+
+type ProgressSink = Arc<dyn Fn(LookupProgress) + Send + Sync>;
+static PROGRESS: std::sync::OnceLock<ProgressSink> = std::sync::OnceLock::new();
+
+/// Where lookup progress goes; set once at start (the app emits it to the page).
+pub fn set_progress_sink(sink: ProgressSink) {
+    let _ = PROGRESS.set(sink);
+}
+
+fn report(query: &AnimeQuery, episode: f64, category: &Category, provider: &str, state: &'static str) {
+    if let Some(sink) = PROGRESS.get() {
+        sink(LookupProgress { anilist_id: query.anilist_id, episode, category: category.as_str(), provider: provider.to_string(), state });
+    }
+}
+
 /// Joins per-provider failure reasons into one line, listing providers that failed for the same
 /// reason together: `"Miruro, AniZone: timed out; AniBD: HTTP 403 from example.org"`.
 pub fn summarize_failures(failures: &[(String, String)]) -> String {
@@ -604,6 +626,21 @@ type SharedQuery = Arc<OnceCell<Arc<AnimeQuery>>>;
 /// The providers one lookup works with, in priority order.
 type Lineup = Arc<Vec<Arc<dyn AnimeProvider>>>;
 
+/// An automatic lookup leaves out providers their repository paused, unless that would leave
+/// nothing to ask.
+fn skip_paused(tiers: Vec<Tier>, lineup: &Lineup) -> Vec<Tier> {
+    let kept: Vec<Tier> = tiers
+        .iter()
+        .map(|t| Tier { language: t.language.clone(), members: t.members.iter().copied().filter(|&i| !lineup[i].paused()).collect() })
+        .filter(|t| !t.members.is_empty())
+        .collect();
+    if kept.is_empty() {
+        tiers
+    } else {
+        kept
+    }
+}
+
 /// Where the manager's providers come from: a fixed list, or a list asked for at the start of
 /// every lookup (installed plugins, which come and go while the app runs).
 pub type ProviderSource = Arc<dyn Fn() -> Vec<Arc<dyn AnimeProvider>> + Send + Sync>;
@@ -617,7 +654,7 @@ fn asked_category(provider: &dyn AnimeProvider, category: &Category) -> Option<C
     match category {
         Category::Sub => Some(Category::Sub),
         Category::Dub if provider.supports_dub() => Some(Category::Dub),
-        Category::Dub if provider.languages().map_or(false, |l| l.dub_only(false)) => Some(Category::Sub),
+        Category::Dub if provider.languages().is_some_and(|l| l.dub_only(false)) => Some(Category::Sub),
         Category::Dub => None,
     }
 }
@@ -626,7 +663,7 @@ fn asked_category(provider: &dyn AnimeProvider, category: &Category) -> Option<C
 /// other languages are allowed, for the provider picked in settings and for providers that do
 /// not say their languages; otherwise only when it serves a preferred language.
 fn offers_preferred(provider: &dyn AnimeProvider, category: &Category, prefs: &LanguagePrefs) -> bool {
-    if !prefs.strict || prefs.pinned.as_deref().map_or(false, |p| p.eq_ignore_ascii_case(provider.name())) {
+    if !prefs.strict || prefs.pinned.as_deref().is_some_and(|p| p.eq_ignore_ascii_case(provider.name())) {
         return true;
     }
     let Some(langs) = provider.languages() else {
@@ -642,7 +679,7 @@ fn offers_preferred(provider: &dyn AnimeProvider, category: &Category, prefs: &L
 /// A provider's listing as it is offered: a dub-only site's episodes are its dub, and with
 /// preferences, lists in languages the user did not ask for are left out.
 fn shape_listing(provider: &dyn AnimeProvider, mut data: ProviderData, prefs: Option<&LanguagePrefs>) -> ProviderData {
-    if provider.languages().map_or(false, |l| l.dub_only(provider.supports_dub())) && data.dub.is_empty() {
+    if provider.languages().is_some_and(|l| l.dub_only(provider.supports_dub())) && data.dub.is_empty() {
         data.dub = std::mem::take(&mut data.sub);
     }
     if let Some(prefs) = prefs {
@@ -693,7 +730,7 @@ impl Inner {
 
     fn is_cooling_down(&self, site: &'static str) -> bool {
         let guard = self.cooldowns.lock().unwrap_or_else(|p| p.into_inner());
-        guard.get(site).map_or(false, |c| Instant::now() < c.until)
+        guard.get(site).is_some_and(|c| Instant::now() < c.until)
     }
 
     fn note_unreachable(&self, site: &'static str) {
@@ -785,7 +822,7 @@ impl Inner {
         if let Some(hit) = self.episodes.get(&key).await {
             let age = hit.fetched_at.elapsed();
             let expired = hit.data.is_empty() && age > EMPTY_EPISODES_TTL;
-            let too_old = refresh_if_older.map_or(false, |limit| age > limit);
+            let too_old = refresh_if_older.is_some_and(|limit| age > limit);
             if !expired && !too_old {
                 return Ok(hit);
             }
@@ -901,6 +938,7 @@ impl Inner {
     ) -> Option<SourcesResult> {
         let mut attempts = JoinSet::new();
         for &idx in wave {
+            report(base, number, category, lineup[idx].name(), "asking");
             let inner = self.clone();
             let provider = lineup[idx].clone();
             let (base, cell, category) = (base.clone(), cell.clone(), category.clone());
@@ -960,7 +998,8 @@ impl Inner {
             }
             match joined {
                 Ok((idx, Ok(sources))) => {
-                    if pending.as_ref().map_or(true, |(held, _)| idx < *held) {
+                    report(base, number, category, lineup[idx].name(), "found");
+                    if pending.as_ref().is_none_or(|(held, _)| idx < *held) {
                         pending = Some((idx, sources));
                     }
                     grace_until.get_or_insert_with(|| tokio::time::Instant::now() + ORDER_GRACE);
@@ -969,6 +1008,7 @@ impl Inner {
                     let provider = &lineup[idx];
                     let name = provider.name();
                     tracing::warn!("provider {} gave no source: {}", name, reason);
+                    report(base, number, category, name, "failed");
                     failures.push(ProviderFailure {
                         index: idx,
                         name,
@@ -1080,7 +1120,7 @@ impl ProviderManager {
             .lineup()
             .iter()
             .find(|p| p.name().eq_ignore_ascii_case(name))
-            .map_or(false, |p| p.episode_by_number(&probe, 1.0).is_some())
+            .is_some_and(|p| p.episode_by_number(&probe, 1.0).is_some())
     }
 
     /// Episode listings of every provider that answered, in provider order. Each provider has
@@ -1244,6 +1284,10 @@ impl ProviderManager {
             }
         };
         let left_out = tiers.iter().map(|t| t.members.len()).sum::<usize>() < lineup.len();
+        let tiers = match preferred {
+            Some(_) => tiers,
+            None => skip_paused(tiers, &lineup),
+        };
 
         let finish = |mut sources: SourcesResult| -> SourcesResult {
             let Some(prefs) = &prefs else {

@@ -31,18 +31,34 @@ pub struct UpdateInfo {
     pub changelog: String,
     pub published_at: String,
     pub release_url: String,
-    /// The release's AppImage, when the site lists one with its checksum.
+    /// The release's AppImage, when the site lists one with its checksum. Built on the oldest
+    /// supported base, so it runs everywhere; 1.3 installs read only this one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub appimage: Option<AppImageAsset>,
+    /// The same release built on a newer base (newer WebKit), for systems whose glibc is at
+    /// least its `min_glibc` (`"appimage_modern"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub appimage_modern: Option<AppImageAsset>,
+    /// Set by `check_for_update`: the release is this installation's version, and the
+    /// newer-base AppImage suits this system, so the update dialog offers to switch builds.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub switch_build: bool,
+    /// Versions the site marks as having a known serious problem (`"bad_versions"`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bad_versions: Vec<String>,
 }
 
-/// `"appimage": { "url", "sha256", "size" }` in `version.json`.
+/// `"appimage": { "url", "sha256", "size" }` in `version.json`; `"appimage_modern"` also has
+/// `"min_glibc"`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AppImageAsset {
     pub url: String,
     /// Lower-case hex.
     pub sha256: String,
     pub size: Option<u64>,
+    /// The oldest glibc ("2.39") the file runs on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_glibc: Option<String>,
 }
 
 impl UpdateInfo {
@@ -53,33 +69,49 @@ impl UpdateInfo {
             published_at,
             release_url,
             appimage: None,
+            appimage_modern: None,
+            switch_build: false,
+            bad_versions: Vec::new(),
         }
     }
 }
 
 /// True when `candidate` is a higher dotted version than `current` ("1.3.0" > "1.2.9"), read
-/// the same way as `isNewerVersion` in the frontend.
+/// the same way as `isNewerVersion` in the frontend. A pre-release ("1.3.0-rc.1") is lower than
+/// its final release and pre-releases compare as in semver; build metadata after `+` is ignored.
 pub fn is_newer_version(candidate: &str, current: &str) -> bool {
-    let parts = |v: &str| -> Vec<u64> {
-        v.trim()
-            .trim_start_matches(['v', 'V'])
-            .split(['.', '+', '-'])
+    type Parsed<'a> = (Vec<u64>, Option<Vec<(bool, u64, &'a str)>>);
+    fn parse(v: &str) -> Parsed<'_> {
+        let v = v.trim().trim_start_matches(['v', 'V']);
+        let v = v.split('+').next().unwrap_or_default();
+        let (core, pre) = v.split_once('-').map_or((v, None), |(core, pre)| (core, Some(pre)));
+        let core: Vec<u64> = core
+            .split('.')
             .map(|p| p.chars().take_while(char::is_ascii_digit).collect::<String>().parse().unwrap_or(0))
-            .collect()
-    };
-    let (a, b) = (parts(candidate), parts(current));
+            .collect();
+        // Semver: numeric identifiers sort numerically and below alphanumeric ones.
+        let pre = pre.map(|pre| {
+            pre.split('.').map(|id| id.parse::<u64>().map_or((true, 0, id), |n| (false, n, ""))).collect::<Vec<_>>()
+        });
+        (core, pre)
+    }
+    let ((a, a_pre), (b, b_pre)) = (parse(candidate), parse(current));
     for i in 0..a.len().max(b.len()).max(3) {
         let (x, y) = (a.get(i).copied().unwrap_or(0), b.get(i).copied().unwrap_or(0));
         if x != y {
             return x > y;
         }
     }
-    false
+    match (a_pre, b_pre) {
+        (None, Some(_)) => true,
+        (Some(a), Some(b)) => a > b,
+        _ => false,
+    }
 }
 
 fn is_web_address(url: &str) -> bool {
-    reqwest::Url::parse(url).map_or(false, |parsed| {
-        matches!(parsed.scheme(), "http" | "https") && parsed.host_str().map_or(false, |host| !host.is_empty())
+    reqwest::Url::parse(url).is_ok_and(|parsed| {
+        matches!(parsed.scheme(), "http" | "https") && parsed.host_str().is_some_and(|host| !host.is_empty())
     })
 }
 
@@ -91,7 +123,47 @@ pub fn parse_appimage_asset(json: &serde_json::Value) -> Option<AppImageAsset> {
     if !is_web_address(url) || sha256.len() != 64 || !sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
         return None;
     }
-    Some(AppImageAsset { url: url.to_string(), sha256, size: json["size"].as_u64().filter(|s| *s > 0) })
+    let min_glibc = json["min_glibc"]
+        .as_str()
+        .map(str::trim)
+        .filter(|v| (3..=12).contains(&v.len()) && v.contains('.') && v.chars().all(|c| c.is_ascii_digit() || c == '.'))
+        .map(String::from);
+    Some(AppImageAsset { url: url.to_string(), sha256, size: json["size"].as_u64().filter(|s| *s > 0), min_glibc })
+}
+
+/// True for the AppImage built on the newer base (`ANIX_APPIMAGE_BASE=modern` when building).
+pub fn running_modern_build() -> bool {
+    option_env!("ANIX_APPIMAGE_BASE") == Some("modern")
+}
+
+/// This system's glibc version ("2.39"). AppImages never bundle glibc, so it is the host's.
+pub fn system_glibc() -> Option<String> {
+    // Only Linux has glibc; the macOS build updates through `mac_update` instead.
+    #[cfg(target_os = "linux")]
+    {
+        let version = unsafe { std::ffi::CStr::from_ptr(libc::gnu_get_libc_version()) };
+        version.to_str().ok().map(String::from)
+    }
+    #[cfg(not(target_os = "linux"))]
+    None
+}
+
+/// The AppImage this installation updates to: the newer-base one when the site lists it and
+/// this is already that build or the system's glibc is at least its `min_glibc`; otherwise the
+/// classic one, which runs everywhere.
+pub fn pick_appimage<'a>(info: &'a UpdateInfo, running_modern: bool, glibc: Option<&str>) -> Option<&'a AppImageAsset> {
+    let fits = |asset: &&AppImageAsset| {
+        running_modern
+            || matches!((asset.min_glibc.as_deref(), glibc), (Some(min), Some(have)) if !is_newer_version(min, have))
+    };
+    info.appimage_modern.as_ref().filter(fits).or(info.appimage.as_ref())
+}
+
+/// True when the site's release is `current` and a classic build may switch to the newer-base
+/// AppImage of the same version.
+pub fn offers_build_switch(info: &UpdateInfo, current: &str, running_modern: bool, glibc: Option<&str>) -> bool {
+    let same = !is_newer_version(&info.version, current) && !is_newer_version(current, &info.version);
+    !running_modern && same && info.appimage_modern.is_some() && pick_appimage(info, false, glibc) == info.appimage_modern.as_ref()
 }
 
 fn tidy_site(site: &str) -> &str {
@@ -176,7 +248,53 @@ pub fn parse_version_document(json: &serde_json::Value, site: &str) -> Option<Up
         published_at: json["published_at"].as_str().unwrap_or("").trim().to_string(),
         release_url,
         appimage: parse_appimage_asset(&json["appimage"]),
+        appimage_modern: parse_appimage_asset(&json["appimage_modern"]),
+        switch_build: false,
+        bad_versions: parse_bad_versions(&json["bad_versions"]),
     })
+}
+
+/// At most this many entries of `bad_versions` are read.
+const MAX_BAD_VERSIONS: usize = 50;
+
+/// `"bad_versions": ["1.4.0", …]`: plain version strings, a leading `v` dropped. Anything else
+/// in the list is ignored.
+pub fn parse_bad_versions(json: &serde_json::Value) -> Vec<String> {
+    json.as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|v| v.as_str())
+        .map(|v| v.trim().trim_start_matches(['v', 'V']).to_string())
+        .filter(|v| !v.is_empty() && v.len() <= 32 && v.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-'))
+        .take(MAX_BAD_VERSIONS)
+        .collect()
+}
+
+/// True when the site lists `current` as a version with a known serious problem.
+pub fn is_bad_version(info: &UpdateInfo, current: &str) -> bool {
+    info.bad_versions.iter().any(|v| v == current.trim_start_matches(['v', 'V']))
+}
+
+/// The release `info` lists, unless the same document marks it as a version with a known
+/// problem: then there is nothing to offer.
+pub fn offered_release(info: Option<UpdateInfo>) -> Option<UpdateInfo> {
+    info.filter(|info| !is_bad_version(info, &info.version))
+}
+
+/// Remembers which version the bad-version notice was last shown for.
+pub const BAD_VERSION_WARNED_FILE: &str = "bad-version-warned";
+
+/// True the first time it is asked for `current`, so the bad-version notice comes once per
+/// version, not on every start.
+pub fn first_bad_version_warning(app_dir: &Path, current: &str) -> bool {
+    let file = app_dir.join(BAD_VERSION_WARNED_FILE);
+    if std::fs::read_to_string(&file).is_ok_and(|seen| seen.trim() == current) {
+        return false;
+    }
+    if let Err(e) = std::fs::write(&file, current) {
+        tracing::warn!("Could not remember the bad-version notice: {}", e);
+    }
+    true
 }
 
 // ---------------------------------------------------------------------------------------
@@ -190,7 +308,7 @@ const STALL_TIMEOUT: Duration = Duration::from_secs(60);
 fn writable(path: &Path) -> bool {
     use std::os::unix::ffi::OsStrExt;
     std::ffi::CString::new(path.as_os_str().as_bytes())
-        .map_or(false, |c| unsafe { libc::access(c.as_ptr(), libc::W_OK) } == 0)
+        .is_ok_and(|c| unsafe { libc::access(c.as_ptr(), libc::W_OK) } == 0)
 }
 
 /// The AppImage file the updater may replace: `$APPIMAGE` (`appimage`) names a file that can
@@ -257,6 +375,8 @@ pub fn install_verified(downloaded: &Path, target: &Path, sha256: &str) -> Resul
         // A copied backup is synced like the update, so a crash cannot leave both truncated.
         let copied = std::fs::copy(target, &backup).and_then(|_| std::fs::File::open(&backup)?.sync_all());
         if let Err(e) = copied {
+            // A half-written copy must not stay behind as something to go back to.
+            let _ = std::fs::remove_file(&backup);
             return fail(format!("The current version could not be backed up, so nothing was changed: {}", e));
         }
     }
@@ -269,6 +389,70 @@ pub fn install_verified(downloaded: &Path, target: &Path, sha256: &str) -> Resul
         tracing::warn!("The folder of the updated AppImage could not be synced: {}", e);
     }
     Ok(backup)
+}
+
+// ---------------------------------------------------------------------------------------
+// Going back after a bad update
+// ---------------------------------------------------------------------------------------
+
+/// Written to the data folder after an update: which version it replaced, so the new version
+/// can offer to go back while the backup is still there.
+pub const ROLLBACK_FILE: &str = "update-rollback.json";
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RollbackRecord {
+    /// The version the backup holds.
+    pub from: String,
+    /// The version that was installed over it.
+    pub to: String,
+    /// [`backup_fingerprint`] of the backup when the record was made.
+    pub backup: String,
+}
+
+/// Size and modification time of `backup`: a backup made later (by an update that then
+/// failed, or by another copy of Anix) no longer matches the record.
+pub fn backup_fingerprint(backup: &Path) -> Option<String> {
+    use std::os::unix::fs::MetadataExt;
+    let meta = std::fs::metadata(backup).ok().filter(|m| m.is_file())?;
+    // No inode: FAT and exFAT number inodes afresh after a remount, which would hide Go back.
+    Some(format!("{}:{}.{}", meta.size(), meta.mtime(), meta.mtime_nsec()))
+}
+
+/// Remembers that `to` was installed over `from`, which `backup` now holds. A failure is only
+/// logged: the update itself is already in place.
+pub fn record_update(app_dir: &Path, from: &str, to: &str, backup: &Path) {
+    let file = app_dir.join(ROLLBACK_FILE);
+    let Some(fingerprint) = backup_fingerprint(backup) else {
+        let _ = std::fs::remove_file(file);
+        return;
+    };
+    let record = RollbackRecord { from: from.to_string(), to: to.to_string(), backup: fingerprint };
+    let written = serde_json::to_vec(&record)
+        .map_err(std::io::Error::other)
+        .and_then(|bytes| std::fs::write(file, bytes));
+    if let Err(e) = written {
+        tracing::warn!("The update record could not be saved: {}", e);
+    }
+}
+
+/// The version Anix can go back to: there is a record of the update to `current`, and the
+/// backup of `target` it made is still there, unchanged.
+pub fn rollback_available(app_dir: &Path, current: &str, target: &Path) -> Option<RollbackRecord> {
+    let record: RollbackRecord = serde_json::from_slice(&std::fs::read(app_dir.join(ROLLBACK_FILE)).ok()?).ok()?;
+    let same_backup = backup_fingerprint(&backup_path(target)).is_some_and(|now| now == record.backup);
+    (record.to == current && same_backup).then_some(record)
+}
+
+/// Puts the backup back in place of `target` in one rename, so `target` is always a whole
+/// AppImage, and forgets the record. The version being left is not kept.
+pub fn roll_back(app_dir: &Path, current: &str, target: &Path) -> Result<RollbackRecord, String> {
+    let record = rollback_available(app_dir, current, target).ok_or("There is no earlier version to go back to.")?;
+    std::fs::rename(backup_path(target), target).map_err(|e| format!("Could not put the earlier version back: {}", e))?;
+    if let Some(Err(e)) = target.parent().map(|dir| std::fs::File::open(dir).and_then(|dir| dir.sync_all())) {
+        tracing::warn!("The folder of the AppImage could not be synced: {}", e);
+    }
+    let _ = std::fs::remove_file(app_dir.join(ROLLBACK_FILE));
+    Ok(record)
 }
 
 /// Downloads `asset` next to `target` and installs it with [`install_verified`]. `progress`

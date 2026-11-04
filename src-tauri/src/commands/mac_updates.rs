@@ -24,11 +24,14 @@ pub async fn check_for_update(state: State<'_, AppState>) -> Result<Option<crate
     mac_update::check(&state.client, repo, env!("CARGO_PKG_VERSION"), mac_update::current_build()).await
 }
 
+/// The install kind the update dialog sees: none of its Linux-specific hints apply.
+const MACOS_KIND: &str = "macos";
+
 pub fn get_update_install_support() -> UpdateInstallSupport {
     // `appimage` is the dialog's "Install is possible" flag; on macOS it means the app bundle.
     match update_repo().and_then(|_| running_bundle()) {
-        Ok(_) => UpdateInstallSupport { appimage: true, reason: None },
-        Err(reason) => UpdateInstallSupport { appimage: false, reason: Some(reason) },
+        Ok(_) => UpdateInstallSupport { appimage: true, reason: None, kind: MACOS_KIND },
+        Err(reason) => UpdateInstallSupport { appimage: false, reason: Some(reason), kind: MACOS_KIND },
     }
 }
 

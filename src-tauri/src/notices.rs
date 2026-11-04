@@ -13,10 +13,14 @@ use tauri::AppHandle;
 
 /// Kinds the Notifications screen has a tab for; any other kind shows under All only.
 pub const AIRING: &str = "airing";
+/// An episode aired but no extension has it yet; listed under the Airing tab too.
+pub const AIRING_MISSING: &str = "airing_missing";
 pub const DOWNLOAD: &str = "download";
 pub const TEST: &str = "test";
 /// The player went back to the web engine by itself.
 pub const PLAYER: &str = "player";
+/// Anix itself, such as "closed unexpectedly last time".
+pub const SYSTEM: &str = "system";
 
 /// Sent to the main window after a notice was added or marked read.
 pub const CHANGED_EVENT: &str = "notices-changed";
@@ -125,7 +129,7 @@ pub async fn list(pool: &SqlitePool, kind: Option<&str>) -> Result<Vec<Notice>, 
     let rows = sqlx::query(
         r#"
         SELECT id, kind, title, body, link, read, created_at FROM notices
-        WHERE ?1 IS NULL OR kind = ?1
+        WHERE ?1 IS NULL OR kind = ?1 OR (?1 = 'airing' AND kind = 'airing_missing')
         ORDER BY created_at DESC, id DESC
         "#,
     )

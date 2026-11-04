@@ -1,12 +1,16 @@
 //! Desktop integration: the tray and background mode, the autostart entry, the windowless
 //! `--background` release checks, the AppImage's `anix://` handler, restarts, and the
-//! hardware-acceleration diagnostics of Settings › System.
+//! hardware-acceleration diagnostics of Settings › System, and the OS random source for tokens.
 
 pub mod autostart;
 pub mod background;
 pub mod gnutls;
 pub mod hwaccel;
 pub mod page_crash;
+pub mod process;
+pub mod random;
+pub mod safe_mode;
+pub mod session_marker;
 pub mod tray;
 pub mod url_handler;
 
@@ -44,6 +48,7 @@ static RESTART_ASKED: AtomicBool = AtomicBool::new(false);
 /// launch arguments. Off the main thread it asks the event loop to exit, so the exit handlers
 /// run first; on the GTK main thread, which must not block, it restarts directly, as Tauri does.
 pub fn restart(app: &AppHandle) -> ! {
+    session_marker::end_current();
     if on_ui_main_thread() {
         app.cleanup_before_exit();
         tauri::process::restart(&clean_env(app));
@@ -67,6 +72,45 @@ fn on_ui_main_thread() -> bool {
     return unsafe { libc::pthread_main_np() } == 1;
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     false
+}
+
+/// Closing the terminal Anix was started from (SIGHUP), `kill` (SIGTERM) and Ctrl+C (SIGINT)
+/// end Anix like Quit does, so the exit handler runs (players stopped, session marker removed).
+/// A stuck app still ends: it is forced out a few seconds after the signal.
+pub fn exit_on_signals(app: &AppHandle) {
+    use tokio::signal::unix::{signal, SignalKind};
+    const FORCE_AFTER: std::time::Duration = std::time::Duration::from_secs(5);
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        // Under `nohup` the hangup stays ignored: watching it would replace that.
+        let hup = if sighup_ignored() { None } else { Some(signal(SignalKind::hangup())) };
+        let (Ok(mut hup), Ok(mut term), Ok(mut int)) =
+            (hup.transpose(), signal(SignalKind::terminate()), signal(SignalKind::interrupt()))
+        else {
+            tracing::warn!("Quit signals could not be watched; they end Anix without its exit steps");
+            return;
+        };
+        let name = tokio::select! {
+            Some(_) = async { hup.as_mut()?.recv().await } => "SIGHUP",
+            _ = term.recv() => "SIGTERM",
+            _ = int.recv() => "SIGINT",
+        };
+        // Quit first: the log line goes to a terminal that may just have closed.
+        app.exit(0);
+        tracing::info!("{} received, quitting", name);
+        tokio::time::sleep(FORCE_AFTER).await;
+        tracing::warn!("Anix did not quit within {:?} of {}; forcing it", FORCE_AFTER, name);
+        std::process::exit(1);
+    });
+}
+
+/// Whether SIGHUP is ignored in this process, as `nohup` leaves it.
+pub fn sighup_ignored() -> bool {
+    // SAFETY: a null new action only reads the current one into `old`.
+    unsafe {
+        let mut old: libc::sigaction = std::mem::zeroed();
+        libc::sigaction(libc::SIGHUP, std::ptr::null(), &mut old) == 0 && old.sa_sigaction == libc::SIG_IGN
+    }
 }
 
 /// Called from the app's `RunEvent::Exit` handler: finishes a [`restart`].
@@ -114,10 +158,19 @@ impl SystemSettings {
     }
 }
 
+/// True inside a Flatpak sandbox. There the autostart entry and the systemd timer would land in
+/// the sandbox's own folders and never run, so both stay off (the Flatpak is a preview).
+pub fn is_flatpak() -> bool {
+    std::path::Path::new("/.flatpak-info").exists()
+}
+
 /// Applies the settings: creates or removes the tray icon and writes or removes the
 /// autostart entry. The entry is only written while the tray is on, since it starts hidden.
 pub fn apply(app: &tauri::AppHandle, settings: SystemSettings) {
     tray::set_enabled(app, settings.minimize_to_tray);
+    if is_flatpak() {
+        return;
+    }
     let Some(config_home) = dirs::config_dir() else {
         return;
     };
@@ -147,6 +200,8 @@ pub struct DesktopStatus {
     pub autostart_path: Option<String>,
     /// What the autostart entry starts.
     pub exec_target: Option<String>,
+    /// Running as a Flatpak: start-at-login and alerts while closed are not available.
+    pub flatpak: bool,
 }
 
 pub fn desktop_status(app: &tauri::AppHandle) -> DesktopStatus {
@@ -155,10 +210,11 @@ pub fn desktop_status(app: &tauri::AppHandle) -> DesktopStatus {
         tray_supported: tray::indicator_library().is_some(),
         tray_host: tray::tray_host_present(),
         tray_active: app.tray_by_id(tray::TRAY_ID).is_some(),
-        autostart_installed: config_home.as_deref().map_or(false, autostart::is_installed),
+        autostart_installed: config_home.as_deref().is_some_and(autostart::is_installed),
         autostart_path: config_home
             .as_deref()
             .map(|dir| autostart::entry_path(dir).to_string_lossy().into_owned()),
         exec_target: autostart::current_exec_target().map(|p| p.to_string_lossy().into_owned()),
+        flatpak: is_flatpak(),
     }
 }

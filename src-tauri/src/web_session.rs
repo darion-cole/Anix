@@ -20,9 +20,7 @@ use base64::Engine as _;
 use once_cell::sync::{Lazy, OnceCell};
 use serde::Serialize;
 use serde_json::Value;
-use std::collections::hash_map::RandomState;
 use std::collections::{HashMap, VecDeque};
-use std::hash::{BuildHasher, Hasher};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -136,7 +134,7 @@ fn forget_site(site: &'static SiteSpec, origin: &str) {
     let window = {
         let mut sites = sites();
         // http and https of one host share a key; only this spec's own state goes.
-        let owned = sites.get(site.key).map_or(false, |state| std::ptr::eq(state.spec, site));
+        let owned = sites.get(site.key).is_some_and(|state| std::ptr::eq(state.spec, site));
         owned.then(|| sites.remove(site.key)).flatten().and_then(|mut state| state.window.take())
     };
     if let Some(window) = window {
@@ -221,7 +219,7 @@ impl WebRequest {
         if !valid_request_path(&self.path) {
             return Some("path");
         }
-        if self.referrer.as_deref().map_or(false, |path| !valid_request_path(path)) {
+        if self.referrer.as_deref().is_some_and(|path| !valid_request_path(path)) {
             return Some("referrer");
         }
         match &self.body {
@@ -407,7 +405,7 @@ fn head_of(body: &str, limit: usize) -> &str {
 pub fn detect_barrier(status: u16, headers: &HashMap<String, String>, body: &str) -> Option<Barrier> {
     let mitigated = headers
         .get("cf-mitigated")
-        .map_or(false, |value| value.to_ascii_lowercase().contains("challenge"));
+        .is_some_and(|value| value.to_ascii_lowercase().contains("challenge"));
     if mitigated {
         return Some(Barrier::Challenge);
     }
@@ -502,13 +500,8 @@ pub fn valid_request_path(path: &str) -> bool {
         && !path.chars().any(|c| c.is_control() || c == '#')
 }
 
-fn new_request_key() -> String {
-    let part = || {
-        let mut hasher = RandomState::new().build_hasher();
-        hasher.write_u128(std::process::id() as u128);
-        hasher.finish()
-    };
-    format!("__anix_{:016x}{:016x}", part(), part())
+fn new_request_key() -> std::io::Result<String> {
+    Ok(format!("__anix_{}", crate::system::random::hex(16)?))
 }
 
 /// The script that makes the request. It keeps its state in one non-enumerable property of the
@@ -862,10 +855,10 @@ impl KnownOrigins {
 static KNOWN_ORIGINS: OnceCell<KnownOrigins> = OnceCell::new();
 
 fn answered_before(site: &SiteSpec) -> bool {
-    KNOWN_ORIGINS.get().map_or(false, |known| {
+    KNOWN_ORIGINS.get().is_some_and(|known| {
         site.origins
             .iter()
-            .any(|origin| normalized_origin(origin).map_or(false, |origin| known.contains(&origin)))
+            .any(|origin| normalized_origin(origin).is_some_and(|origin| known.contains(&origin)))
     })
 }
 
@@ -1710,7 +1703,10 @@ async fn collect_once(window: &WebviewWindow, script: &str) -> Collected {
 }
 
 async fn request(window: &WebviewWindow, origin: &str, asked: &WebRequest, deadline: Instant) -> Outcome {
-    let key = new_request_key();
+    let key = match new_request_key() {
+        Ok(key) => key,
+        Err(e) => return Outcome::Failed(e.to_string()),
+    };
     if window.eval(request_script(&key, origin, asked)).is_err() {
         return Outcome::Gone;
     }
@@ -1805,7 +1801,7 @@ pub fn note_plain_refusal(site: &'static SiteSpec, origin: &str, asked: &WebRequ
 /// The plain client is answered by the site again; a refusal noted from it alone is dropped.
 pub fn clear_plain_refusal(site: &SiteSpec) {
     with_site(site.key, |state| {
-        if !state.visible && state.blocked.as_ref().map_or(false, |blocked| blocked.plain) {
+        if !state.visible && state.blocked.as_ref().is_some_and(|blocked| blocked.plain) {
             state.blocked = None;
         }
     });

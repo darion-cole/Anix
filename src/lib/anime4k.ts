@@ -13,19 +13,6 @@ export type Anime4kPreset =
   | 'b_hq'
   | 'c_hq';
 
-export const ANIME4K_PRESETS: readonly Anime4kPreset[] = [
-  'off',
-  'a_fast',
-  'b_fast',
-  'c_fast',
-  'a_balanced',
-  'b_balanced',
-  'c_balanced',
-  'a_hq',
-  'b_hq',
-  'c_hq',
-];
-
 export type Anime4kMode = 'off' | 'a' | 'b' | 'c';
 /** Balanced keeps HQ's first stage and fast's later ones: most of HQ's look at about half the work. */
 export type Anime4kQuality = 'fast' | 'balanced' | 'hq';

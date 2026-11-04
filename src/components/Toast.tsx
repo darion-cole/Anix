@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React from 'react';
 import { createPortal } from 'react-dom';
 import { X, CheckCircle, AlertTriangle, AlertCircle, Info } from 'lucide-react';
 import clsx from 'clsx';
@@ -6,6 +6,9 @@ import { useUIStore } from '../stores/uiStore';
 import type { ToastMessage } from '../stores/uiStore';
 import { Button } from './ui/Button';
 import { t } from '../i18n';
+import { useFullscreenElement } from '../hooks/useFullscreen';
+import { Sfx } from './Sfx';
+import { Meme, MemeImage, useHighModule } from './meme/Meme';
 
 interface ToastContainerProps {
   /**
@@ -22,21 +25,16 @@ const ICONS: Record<ToastMessage['type'], React.ReactNode> = {
   info: <Info aria-hidden="true" className="mt-0.5 h-4 w-4 flex-shrink-0 text-accent-300" />,
 };
 
+
 export const ToastContainer: React.FC<ToastContainerProps> = ({ placement = 'bottom-right' }) => {
   const toasts = useUIStore((s) => s.toasts);
   const removeToast = useUIStore((s) => s.removeToast);
   const pauseToast = useUIStore((s) => s.pauseToast);
   const resumeToast = useUIStore((s) => s.resumeToast);
+  const high = useHighModule();
 
   // Only the fullscreen element is painted while fullscreen, so toasts follow it.
-  const [fullscreenElement, setFullscreenElement] = useState<Element | null>(
-    () => document.fullscreenElement
-  );
-  useEffect(() => {
-    const sync = () => setFullscreenElement(document.fullscreenElement);
-    document.addEventListener('fullscreenchange', sync);
-    return () => document.removeEventListener('fullscreenchange', sync);
-  }, []);
+  const fullscreenElement = useFullscreenElement();
 
   // The live region stays mounted while empty so that additions are announced. It is the only
   // live region: a role on each toast as well would announce it twice.
@@ -51,46 +49,55 @@ export const ToastContainer: React.FC<ToastContainerProps> = ({ placement = 'bot
           : 'bottom-6 end-2 max-w-[392px] items-stretch'
       )}
     >
-      {toasts.map((toast) => (
-        <div
-          key={toast.id}
-          // Paused while the pointer or keyboard focus is on it, so it can't vanish mid-read.
-          onPointerEnter={() => pauseToast(toast.id)}
-          onPointerLeave={(e) => {
-            if (!e.currentTarget.contains(document.activeElement)) resumeToast(toast.id);
-          }}
-          onFocus={() => pauseToast(toast.id)}
-          onBlur={(e) => {
-            const toastEl = e.currentTarget;
-            if (!toastEl.contains(e.relatedTarget as Node | null) && !toastEl.matches(':hover')) {
-              resumeToast(toast.id);
-            }
-          }}
-          className="ui-toast pointer-events-auto flex max-w-full items-start gap-3 rounded-xl border border-border-strong bg-bg-elevated py-3 ps-4 pe-2 shadow-pop animate-slide-up"
-        >
-          {ICONS[toast.type]}
-          <div className="flex min-w-0 flex-1 flex-col">
-            <span className="break-words text-[13px] font-medium leading-5 text-text-primary select-text">
-              {toast.title}
-            </span>
-            {toast.message && (
-              <p className="mt-0.5 break-words text-xs leading-[18px] text-text-secondary select-text">
-                {toast.message}
-              </p>
+      {toasts.map((toast) => {
+        // On High, a toast with a meme spot shows that spot's image instead of its icon (and no sparkle beside it).
+        const image = toast.meme && high?.spotImage(toast.meme);
+        return (
+          <div
+            key={toast.id}
+            // Paused while the pointer or keyboard focus is on it, so it can't vanish mid-read.
+            onPointerEnter={() => pauseToast(toast.id)}
+            onPointerLeave={(e) => {
+              if (!e.currentTarget.contains(document.activeElement)) resumeToast(toast.id);
+            }}
+            onFocus={() => pauseToast(toast.id)}
+            onBlur={(e) => {
+              const toastEl = e.currentTarget;
+              if (!toastEl.contains(e.relatedTarget as Node | null) && !toastEl.matches(':hover')) {
+                resumeToast(toast.id);
+              }
+            }}
+            // Springs in on ordinary screens; over the player it just appears, so nothing moves over the picture.
+            className={clsx(
+              'ui-toast pointer-events-auto relative flex max-w-full items-start gap-3 rounded-xl border border-border-strong bg-bg-elevated py-3 ps-4 pe-2 shadow-pop',
+              placement === 'bottom-right' && 'ui-toast-in'
             )}
-          </div>
-          <Button
-            icon
-            variant="ghost"
-            size="sm"
-            aria-label={t('toast.dismiss')}
-            onClick={() => removeToast(toast.id)}
-            className="-my-1"
           >
-            <X aria-hidden="true" className="h-3.5 w-3.5" />
-          </Button>
-        </div>
-      ))}
+            {image ? <MemeImage name={image} /> : ICONS[toast.type]}
+            <div className="flex min-w-0 flex-1 flex-col">
+              <span className="break-words text-[13px] font-medium leading-5 text-text-primary select-text">
+                {toast.meme ? <Meme spot={toast.meme} plain={toast.title} /> : toast.title}
+              </span>
+              {toast.message && (
+                <p className="mt-0.5 break-words text-xs leading-[18px] text-text-secondary select-text">
+                  {toast.message}
+                </p>
+              )}
+            </div>
+            {toast.art === 'levelUp' && !image && <Sfx text={t('fun.sfxSparkle')} className="fun-sfx-toast" />}
+            <Button
+              icon
+              variant="ghost"
+              size="sm"
+              aria-label={t('toast.dismiss')}
+              onClick={() => removeToast(toast.id)}
+              className="-my-1"
+            >
+              <X aria-hidden="true" className="h-3.5 w-3.5" />
+            </Button>
+          </div>
+        );
+      })}
     </div>,
     fullscreenElement ?? document.body
   );

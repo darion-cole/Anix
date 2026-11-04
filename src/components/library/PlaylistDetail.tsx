@@ -11,6 +11,7 @@ import {
 } from '../../hooks/usePlaylists';
 import { newQueuedDownload, useQueueDownloads } from '../../hooks/useDownloads';
 import { useSettings } from '../../hooks/useSettings';
+import { useDesktopStatus } from '../../hooks/useSystem';
 import { usePreferredProvider } from '../../hooks/usePlugins';
 import { distinctEpisodeTitle, watchPath } from '../../hooks/watchProgress';
 import { usePlayerStore } from '../../stores/playerStore';
@@ -19,6 +20,7 @@ import type { CustomPlaylist, CustomPlaylistItem } from '../../types';
 import { categoryLabel, episodeLabel, formatDate, playerLabel, watchCategory } from './format';
 import { CoverThumb } from './CoverThumb';
 import { PlaylistCollage } from './PlaylistCollage';
+import { MemeFrame } from '../meme/Meme';
 import { t, tn } from '../../i18n';
 
 type ExternalPlayer = 'mpv' | 'vlc';
@@ -49,6 +51,8 @@ function itemName(item: CustomPlaylistItem): string {
 
 export const PlaylistDetail: React.FC<PlaylistDetailProps> = ({ playlist, onBack, onDeleted }) => {
   const navigate = useNavigate();
+  // The Flatpak cannot start mpv or VLC on the host.
+  const flatpak = useDesktopStatus().data?.flatpak === true;
   const { data: settings } = useSettings();
   // A stored preference that is not an enabled plugin behaves as Auto.
   const preferredProvider = usePreferredProvider(settings?.preferred_provider);
@@ -301,8 +305,8 @@ export const PlaylistDetail: React.FC<PlaylistDetailProps> = ({ playlist, onBack
           <Play className="w-4 h-4 fill-current" aria-hidden="true" />
           <span>{t('common.play')}</span>
         </Button>
-        {externalButton('mpv')}
-        {externalButton('vlc')}
+        {!flatpak && externalButton('mpv')}
+        {!flatpak && externalButton('vlc')}
         {resolving && (
           <Button variant="ghost" onClick={handleCancelResolve} disabled={resolving.cancelling}>
             {resolving.cancelling ? t('playlistDetail.cancelling') : t('common.cancel')}
@@ -448,6 +452,7 @@ export const PlaylistDetail: React.FC<PlaylistDetailProps> = ({ playlist, onBack
               { count: episodeCount }
             )}
           </p>
+          <MemeFrame spot="cantUndo" className="meme-cant-undo" />
           {deleteError && (
             <p role="alert" className="text-xs text-state-error select-text">
               {deleteError}

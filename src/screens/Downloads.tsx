@@ -1,6 +1,6 @@
 import React, { useId, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Compass, Download, FolderOpen, Play, RotateCw, Trash2, X } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, Clock, Compass, Download, FolderOpen, Play, RotateCw, Trash2, X } from 'lucide-react';
 import clsx from 'clsx';
 import { invoke } from '@tauri-apps/api/core';
 import { Button, EmptyState, ErrorState, Modal, Spinner, Switch, errorMessage } from '../components/ui';
@@ -11,7 +11,9 @@ import {
   useDownloadFolder,
   useRetryDownload,
 } from '../hooks/useDownloads';
-import { usePlayful, useSettings } from '../hooks/useSettings';
+import { useMemeLevel, usePlayful, useSettings } from '../hooks/useSettings';
+import { Meme, MemeFrame, MemeImage, useHighModule, useMemeText } from '../components/meme/Meme';
+import { useDesktopStatus } from '../hooks/useSystem';
 import { useUIStore } from '../stores/uiStore';
 import { downloadLanguageLabel } from '../lib/downloadPicks';
 import type { DownloadRecord } from '../types';
@@ -118,7 +120,7 @@ const DiskUsage: React.FC<{ savedBytes: number }> = ({ savedBytes }) => {
             aria-valuemax={100}
             aria-valuenow={Math.round(pct(used))}
             aria-valuetext={t('downloads.freeOf', { free: sizeOrZero(free), total: formatBytes(total) })}
-            className="flex h-2 w-full overflow-hidden rounded-full bg-ink/10"
+            className="flex h-3 w-full overflow-hidden rounded-full bg-ink/10"
           >
             <div className="h-full bg-accent-500" style={{ width: `${pct(ours)}%` }} />
             <div className="h-full bg-ink/30" style={{ width: `${pct(used - ours)}%` }} />
@@ -132,7 +134,10 @@ const DiskUsage: React.FC<{ savedBytes: number }> = ({ savedBytes }) => {
               <span aria-hidden="true" className="h-2 w-2 rounded-full bg-ink/30" />
               {t('downloads.otherFiles', { size: sizeOrZero(used - ours) })}
             </span>
-            <span>{t('downloads.freeOf', { free: sizeOrZero(free), total: formatBytes(total) })}</span>
+            <span className="flex items-center gap-1.5">
+              <span aria-hidden="true" className="h-2 w-2 rounded-full bg-ink/10 ring-1 ring-inset ring-ink/20" />
+              {t('downloads.freeOf', { free: sizeOrZero(free), total: formatBytes(total) })}
+            </span>
           </p>
         </>
       )}
@@ -143,11 +148,15 @@ const DiskUsage: React.FC<{ savedBytes: number }> = ({ savedBytes }) => {
 /** The download running now, larger, at the top; `children` are its buttons. */
 const CurrentBanner: React.FC<{ record: DownloadRecord; children?: React.ReactNode }> = ({ record, children }) => {
   const percent = Math.round(fractionOf(record) * 100);
+  const high = useHighModule();
+  const memeText = useMemeText();
   return (
     <section aria-label={t('downloads.downloadingNow')} className="flex items-center gap-4 rounded-xl ui-card bg-accent-tint p-4">
       <PosterWithRing record={record} size="lg" />
       <div className="flex min-w-0 flex-1 flex-col gap-1">
-        <p className="text-[11px] font-semibold uppercase tracking-wider text-accent-300">{t('downloads.downloadingNow')}</p>
+        <p className="text-[11px] font-semibold uppercase tracking-wider text-accent-300">
+          <Meme spot="dlNow" plain={t('downloads.downloadingNow')} />
+        </p>
         <p className="truncate text-sm font-semibold text-text-primary">{record.series_title}</p>
         <p className="truncate text-xs text-text-secondary">{details(record)}</p>
         <div
@@ -156,12 +165,18 @@ const CurrentBanner: React.FC<{ record: DownloadRecord; children?: React.ReactNo
           aria-valuemin={0}
           aria-valuemax={100}
           aria-valuenow={percent}
-          className="mt-1 h-1.5 w-full max-w-md overflow-hidden rounded-full bg-ink/10"
+          className="mt-1 h-2 w-full max-w-md overflow-hidden rounded-full bg-ink/10"
         >
-          <div className="h-full rounded-full bg-accent-500" style={{ width: `${percent}%` }} />
+          <div className="ui-stripes h-full rounded-full bg-accent-500" style={{ width: `${percent}%` }} />
         </div>
         <p className="text-xs tabular-nums text-text-muted">
-          {percent > 0 ? `${percent}%` : t('downloads.starting')}
+          {percent > 0 && high ? (
+            <span className="meme-mob" title={memeText('dlPct', `${percent}%`)}>{`${percent}%`}</span>
+          ) : percent > 0 ? (
+            `${percent}%`
+          ) : (
+            t('downloads.starting')
+          )}
           {record.file_size ? ` · ${formatBytes(record.file_size)}` : ''}
         </p>
       </div>
@@ -170,18 +185,29 @@ const CurrentBanner: React.FC<{ record: DownloadRecord; children?: React.ReactNo
   );
 };
 
-const Group: React.FC<{ title: string; count: number; action?: React.ReactNode; children: React.ReactNode }> = ({
-  title,
-  count,
-  action,
-  children,
-}) => {
+const Group: React.FC<{
+  title: React.ReactNode;
+  count: number;
+  icon: React.ReactNode;
+  tone?: 'error';
+  action?: React.ReactNode;
+  children: React.ReactNode;
+}> = ({ title, count, icon, tone, action, children }) => {
   const id = useId();
   return (
     <section aria-labelledby={id} className="flex flex-col gap-2">
       <div className="flex items-center justify-between gap-4">
-        <h2 id={id} className="text-[11px] font-semibold uppercase tracking-wider text-text-muted">
-          {title} <span className="tabular-nums">({count})</span>
+        <h2
+          id={id}
+          className={clsx(
+            'flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider [&>svg]:h-3.5 [&>svg]:w-3.5',
+            tone === 'error' ? 'text-state-error' : 'text-text-muted'
+          )}
+        >
+          {icon}
+          <span>
+            {title} <span className="tabular-nums">({count})</span>
+          </span>
         </h2>
         {action}
       </div>
@@ -198,7 +224,12 @@ const Row: React.FC<{ record: DownloadRecord; children?: React.ReactNode; tone?:
   const status = record.status.toUpperCase();
   const size = formatBytes(record.file_size);
   return (
-    <li className="flex items-center gap-3 rounded-md ui-card bg-bg-card p-3 [content-visibility:auto] [contain-intrinsic-size:auto_88px]">
+    <li
+      className={clsx(
+        'flex items-center gap-3 rounded-md ui-card bg-bg-card p-3 [content-visibility:auto] [contain-intrinsic-size:auto_88px]',
+        tone === 'error' && 'border-s-4 border-s-state-error'
+      )}
+    >
       <PosterWithRing record={record} />
       <div className="flex min-w-0 flex-1 flex-col gap-1">
         <span className="truncate text-[13px] font-medium text-text-primary">{record.series_title}</span>
@@ -212,9 +243,14 @@ const Row: React.FC<{ record: DownloadRecord; children?: React.ReactNode; tone?:
         ) : status === 'QUEUED' ? (
           <span className="text-xs text-text-muted">{t('downloads.waiting')}</span>
         ) : (
-          <span className="text-xs tabular-nums text-text-secondary">
-            {t('downloads.downloadingPercent', { percent: Math.round(fractionOf(record) * 100) })}
-          </span>
+          <>
+            <span aria-hidden="true" className="h-1.5 w-full max-w-md overflow-hidden rounded-full bg-ink/10">
+              <span className="ui-stripes block h-full rounded-full bg-accent-500" style={{ width: `${Math.round(fractionOf(record) * 100)}%` }} />
+            </span>
+            <span className="text-xs tabular-nums text-text-secondary">
+              {t('downloads.downloadingPercent', { percent: Math.round(fractionOf(record) * 100) })}
+            </span>
+          </>
         )}
       </div>
       <div className="flex flex-shrink-0 items-center gap-1">{children}</div>
@@ -225,6 +261,9 @@ const Row: React.FC<{ record: DownloadRecord; children?: React.ReactNode; tone?:
 export const Downloads: React.FC = () => {
   const navigate = useNavigate();
   const playful = usePlayful();
+  const memeLevel = useMemeLevel();
+  const high = useHighModule();
+  const memeText = useMemeText();
   const { data: settings } = useSettings();
   const showToast = useUIStore((s) => s.showToast);
   const query = useAllDownloads({ watch: true });
@@ -236,6 +275,8 @@ export const Downloads: React.FC = () => {
   const deleteFileLabel = useId();
   const canDeleteFile = !!pendingDelete?.file_path && pendingDelete.status.toUpperCase() === 'COMPLETED';
   const player = externalPlayerFor(settings);
+  // The Flatpak cannot start mpv or VLC on the host.
+  const flatpak = useDesktopStatus().data?.flatpak === true;
 
   const downloads = query.data ?? [];
   const byStatus = (status: string) => downloads.filter((d) => d.status.toUpperCase() === status);
@@ -289,6 +330,14 @@ export const Downloads: React.FC = () => {
       variant="ghost"
       size="sm"
       aria-label={t('downloads.removeFor', { name: rowName(record) })}
+      title={
+        high
+          ? memeText(
+              record.status.toUpperCase() === 'COMPLETED' ? 'dlDelete' : 'dlCancel',
+              t('downloads.removeFor', { name: rowName(record) })
+            )
+          : undefined
+      }
       onClick={() => {
         setDeleteError(null);
         setDeleteFile(true);
@@ -302,7 +351,9 @@ export const Downloads: React.FC = () => {
   return (
     <div className="flex flex-col gap-6 pb-16 animate-fade-in">
       <div>
-        <h1 className="text-xl font-semibold text-text-primary">{t('downloads.title')}</h1>
+        <h1 className="meme-title text-xl font-semibold text-text-primary">
+          <Meme spot="dlTitle" plain={t('downloads.title')} />
+        </h1>
         {downloads.length > 0 && (
           <p className="mt-1 text-xs text-text-muted">
             {[
@@ -329,7 +380,8 @@ export const Downloads: React.FC = () => {
       ) : downloads.length === 0 ? (
         <EmptyState
           icon={<Download aria-hidden="true" />}
-          title={playful ? t('downloads.nothingDownloadedYet') : t('downloads.noDownloadsYet')}
+          title={playful && memeLevel !== 'high' ? t('downloads.nothingDownloadedYet') : t('downloads.noDownloadsYet')}
+          meme="dlEmpty"
           description={playful ? t('downloads.playfulEmpty') : t('downloads.emptyDescription')}
           mood="sleepy"
           kaomoji="(=^_^=)" /* i18n-ignore */
@@ -345,7 +397,7 @@ export const Downloads: React.FC = () => {
           {running[0] && <CurrentBanner record={running[0]}>{removeButton(running[0])}</CurrentBanner>}
 
           {running.length > 1 && (
-            <Group title={t('downloads.alsoDownloading')} count={running.length - 1}>
+            <Group title={t('downloads.alsoDownloading')} count={running.length - 1} icon={<Download aria-hidden="true" />}>
               {running.slice(1).map((record) => (
                 <Row key={record.id} record={record}>
                   {removeButton(record)}
@@ -355,7 +407,11 @@ export const Downloads: React.FC = () => {
           )}
 
           {queued.length > 0 && (
-            <Group title={t('downloads.upNext')} count={queued.length}>
+            <Group
+              title={<Meme spot="dlNext" plain={t('downloads.upNext')} />}
+              count={queued.length}
+              icon={high ? <MemeImage name="lancer-i-can-wait" className="meme-dl-head" /> : <Clock aria-hidden="true" />}
+            >
               {queued.map((record) => (
                 <Row key={record.id} record={record}>
                   {removeButton(record)}
@@ -365,9 +421,15 @@ export const Downloads: React.FC = () => {
           )}
 
           {failed.length > 0 && (
-            <Group title={t('downloads.failed')} count={failed.length}>
+            <Group
+              title={<Meme spot="dlFailH" plain={t('downloads.failed')} />}
+              count={failed.length}
+              icon={<AlertTriangle aria-hidden="true" />}
+              tone="error"
+            >
               {failed.map((record) => (
                 <Row key={record.id} record={record} tone="error">
+                  {high && <high.MemeVein />}
                   <Button
                     variant="secondary"
                     size="sm"
@@ -394,10 +456,10 @@ export const Downloads: React.FC = () => {
           )}
 
           {saved.length > 0 && (
-            <Group title={t('downloads.saved')} count={saved.length}>
+            <Group title={t('downloads.saved')} count={saved.length} icon={<CheckCircle2 aria-hidden="true" />}>
               {saved.map((record) => (
                 <Row key={record.id} record={record}>
-                  {record.file_path && (
+                  {record.file_path && !flatpak && (
                     <Button
                       variant="secondary"
                       size="sm"
@@ -458,6 +520,12 @@ export const Downloads: React.FC = () => {
                 {canDeleteFile && deleteFile ? t('downloads.fileWillBeDeleted') : t('downloads.fileStaysOnDisk')}
                 <span className="mt-1 block break-all select-text">{pendingDelete.file_path}</span>
               </p>
+            )}
+            {canDeleteFile && deleteFile && (
+              <>
+                <MemeFrame spot="cantUndo" className="meme-cant-undo" />
+                <p className="text-xs font-medium text-state-error">{t('downloads.cannotBeUndone')}</p>
+              </>
             )}
             {deleteError && (
               <p role="alert" className="text-xs text-state-error select-text">

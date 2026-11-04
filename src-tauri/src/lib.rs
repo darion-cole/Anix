@@ -19,6 +19,7 @@ pub mod mpv_ipc;
 pub mod notices;
 pub mod notifier;
 pub mod offline;
+pub mod party;
 pub mod plugins;
 pub mod providers;
 pub mod release_check;
@@ -42,25 +43,17 @@ pub fn env_var_os(name: &str, legacy_name: &str) -> Option<std::ffi::OsString> {
 /// Sends backend logs to stderr in development and to a log file in packaged builds,
 /// where nothing is attached to stderr.
 pub(crate) fn init_logging() {
-    let builder = tracing_subscriber::fmt().with_max_level(tracing::Level::INFO);
+    // A write that fails (stderr on a closed terminal, a full disk) must not panic: tracing would
+    // report it with `eprintln!`, which panics when stderr is gone.
+    let builder = tracing_subscriber::fmt().with_max_level(tracing::Level::INFO).log_internal_errors(false);
 
     if cfg!(debug_assertions) {
         let _ = builder.with_writer(std::io::stderr).try_init();
         return;
     }
 
-    let log_file = db::get_app_dir().ok().and_then(|dir| {
-        let path = dir.join(migration::LOG_FILE_NAME);
-        // Start over once the file grows past 2 MB.
-        let too_big = std::fs::metadata(&path).map(|m| m.len() > 2 * 1024 * 1024).unwrap_or(false);
-        std::fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .append(!too_big)
-            .truncate(too_big)
-            .open(path)
-            .ok()
-    });
+    let log_file =
+        db::get_app_dir().ok().and_then(|dir| open_log(&dir.join(migration::LOG_FILE_NAME), LOG_MAX_BYTES));
 
     let _ = match log_file {
         Some(file) => builder
@@ -69,6 +62,31 @@ pub(crate) fn init_logging() {
             .try_init(),
         None => builder.with_writer(std::io::stderr).try_init(),
     };
+    log_panics();
+}
+
+const LOG_MAX_BYTES: u64 = 2 * 1024 * 1024;
+
+/// Opens the log for appending. Once it is past `max_bytes` it becomes `<name>.1` (replacing the
+/// older one) and a new file starts, so the lines before a crash survive the next start.
+pub fn open_log(path: &std::path::Path, max_bytes: u64) -> Option<std::fs::File> {
+    if std::fs::metadata(path).map(|m| m.len() > max_bytes).unwrap_or(false) {
+        let mut previous = path.as_os_str().to_owned();
+        previous.push(".1");
+        if let Err(e) = std::fs::rename(path, &previous) {
+            eprintln!("The log could not be moved aside: {}", e);
+        }
+    }
+    std::fs::OpenOptions::new().create(true).append(true).open(path).ok()
+}
+
+/// Writes a panic's message and place to the log before the default handler runs.
+fn log_panics() {
+    let default = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        tracing::error!("panic: {}", info);
+        default(info);
+    }));
 }
 
 pub fn run() {
@@ -79,6 +97,8 @@ pub fn run() {
     let migrated = migration::migrate(&bases);
     init_logging();
     migrated.log();
+    // Before the window is built, so a start that crashes while building it is counted too.
+    let unclean = db::get_app_dir().map(|dir| system::session_marker::begin(&dir)).unwrap_or(0);
 
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -86,9 +106,9 @@ pub fn run() {
             // forward, also when it is hidden in the tray.
             system::tray::show_main_window(app);
         }))
-        .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_deep_link::init())
+        .manage(commands::party::PartyState::default())
         .setup(move |app| {
             web_session::init(app.handle().clone());
             match tauri::async_runtime::block_on(db::init_db()) {
@@ -108,9 +128,39 @@ pub fn run() {
                     accounts::spawn_sync(app.handle().clone());
                     downloads::spawn_queue_worker(app.handle().clone());
                     notices::init(app.handle().clone());
+                    if system::safe_mode::active() {
+                        tracing::warn!("{} sessions in a row did not exit cleanly: starting in safe mode", unclean);
+                        notices::push_translated(
+                            app.handle(),
+                            notices::SYSTEM,
+                            "safe_mode_title",
+                            "safe_mode_body",
+                            Some("/settings?section=system"),
+                        );
+                    } else if unclean > 0 {
+                        tracing::warn!("The last session did not exit cleanly");
+                        notices::push_translated(
+                            app.handle(),
+                            notices::SYSTEM,
+                            "unclean_exit_title",
+                            "unclean_exit_body",
+                            Some("/settings?section=system"),
+                        );
+                    }
                     notifier::start(app.handle().clone());
                     system::apply(app.handle(), system::SystemSettings::read());
                     system::url_handler::register_for_appimage();
+                    system::exit_on_signals(app.handle());
+                    commands::updates::check_version_at_start(app.handle());
+                    let progress = app.handle().clone();
+                    providers::manager::set_progress_sink(std::sync::Arc::new(move |step| {
+                        use tauri::Emitter;
+                        let _ = progress.emit(providers::manager::EVENT_SOURCES_PROGRESS, step);
+                    }));
+                    let stale = mpv_ipc::remove_stale_sockets(&mpv_ipc::socket_dir());
+                    if stale > 0 {
+                        tracing::info!("Removed {} mpv socket(s) left by an earlier session", stale);
+                    }
                     let args: Vec<String> = std::env::args().collect();
                     system::tray::hide_if_started_minimised(app.handle(), &args);
                     let pool = app.state::<AppState>().pool.clone();
@@ -128,6 +178,9 @@ pub fn run() {
                 }
                 Err(e) => {
                     tracing::error!("Failed to initialize database: {}", e);
+                    if let Ok(dir) = db::get_app_dir() {
+                        system::session_marker::abandon(&dir, unclean);
+                    }
                     let handle = app.handle().clone();
                     // i18n reads settings.json and the locale, not the database, so this works.
                     let text = crate::i18n::text(crate::i18n::current(), "db_open_failed");
@@ -182,7 +235,6 @@ pub fn run() {
             commands::update_watch_progress,
             commands::add_to_watchlist,
             commands::remove_from_watchlist,
-            commands::is_in_watchlist,
             commands::get_watchlist,
             commands::set_episodes_watched,
             commands::get_watched_history,
@@ -220,19 +272,29 @@ pub fn run() {
             commands::save_settings,
             // System
             commands::get_desktop_status,
+            commands::data_disk_low,
             commands::get_hardware_report,
             commands::save_diagnostics_report,
             commands::open_log_folder,
             commands::get_desktop_appearance,
+            commands::window_is_fullscreen,
             // Player
             commands::launch_external_player,
             commands::read_subtitle_file,
             mpris::mpris_update,
             mpris::mpris_clear,
             commands::external_upscaling::set_external_upscaling,
+            // Watch party
+            commands::party::party_host,
+            commands::party::party_join,
+            commands::party::party_leave,
+            commands::party::party_status,
+            commands::party::party_discover,
+            commands::party::party_load,
+            commands::party::party_report,
+            commands::party::party_ready,
             // AnimeThemes & Local Media
             commands::fetch_anime_themes,
-            commands::scan_local_anime_directory,
             commands::open_file_in_player,
             commands::player::open_external,
             // Your files (local episodes linked to a title)
@@ -250,13 +312,13 @@ pub fn run() {
             commands::match_local_series,
             commands::search_local_match,
             commands::set_local_series_match,
-            commands::clear_local_series_match,
             // Updates
             commands::check_for_update,
-            commands::get_site_url,
             commands::get_update_install_support,
             commands::install_update,
             commands::restart_after_update,
+            commands::get_rollback,
+            commands::rollback_update,
             // Stream proxy
             stream_proxy::get_stream_proxy_base,
             // Embedded mpv player
@@ -287,7 +349,9 @@ pub fn run() {
         .expect("error while running tauri application")
         .run(|app, event| {
             if let tauri::RunEvent::Exit = event {
+                system::session_marker::end_current();
                 embedded_mpv::on_exit();
+                commands::party::on_exit(app);
                 system::restart_if_asked(app);
             }
         });

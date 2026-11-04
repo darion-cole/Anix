@@ -1,5 +1,6 @@
 import type { ThemeId } from '../theme/themes';
 import type { TimeFormat } from '../lib/time';
+import type { MemeLevel } from '../lib/memeLevel';
 
 export interface MediaTitle {
   romaji: string | null;
@@ -403,12 +404,21 @@ export interface UpdateInfo {
   release_url: string;
   /** The release's AppImage, when the website lists it with a checksum. */
   appimage?: { url: string; sha256: string; size: number | null };
+  /** Same version, but the newer-base AppImage suits this system: the dialog offers a switch. */
+  switch_build?: boolean;
+}
+
+/** `get_rollback`: the version an update replaced, while its backup is kept. */
+export interface RollbackInfo {
+  version: string;
 }
 
 /** `get_update_install_support`: whether Install can replace the running AppImage. */
 export interface UpdateInstallSupport {
   appimage: boolean;
   reason: string | null;
+  /** How Anix was installed; decides how the dialog says to update without Install. */
+  kind: 'appimage' | 'flatpak' | 'package';
 }
 
 export interface HomeData {
@@ -477,6 +487,10 @@ export interface AppSettings {
   use_system_accent: boolean;
   /** Mascot, kaomoji, friendlier wording and the completed stamp. */
   playful_touches: boolean;
+  /** Settings › Appearance › Meme mode: Low (default), Medium (game-style layer) or High (meme images and lines); Medium and High also show the playful touches. */
+  meme_mode: MemeLevel;
+  /** Settings › Appearance › Fewer effects: no glow, no blur, motion as with reduced motion (weak graphics, old WebKit). */
+  fewer_effects?: boolean;
   /** Hours after an air time during which extensions are asked whether the episode is out. */
   release_check_hours: number;
   /** "Alerts while Anix is closed": a windowless `--background` process is started at login. */
@@ -661,14 +675,6 @@ export interface AnimeThemeEntry {
   resolution: number | null;
 }
 
-export interface LocalAnimeFile {
-  file_path: string;
-  file_name: string;
-  file_size: number;
-  parsed_title: string;
-  parsed_episode: number | null;
-}
-
 export interface CustomPlaylist {
   id: string;
   name: string;
@@ -736,6 +742,8 @@ export interface PluginInfo {
   configurable: boolean;
   /** The last refresh could not read its manifest or code; the installed version is kept. */
   stale: boolean;
+  /** Its repository paused it as broken, with this reason; automatic lookups skip it. */
+  paused: string | null;
 }
 
 /** One setting of a plugin (`get_plugin_config`). */

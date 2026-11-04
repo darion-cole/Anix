@@ -4,6 +4,7 @@ import { useDesktopAppearance } from './useDesktopAppearance';
 import { applyLook, applyTheme, currentTheme, isThemeId, DEFAULT_THEME } from '../theme/themes';
 import { applyAccentOverride, parseHexColor } from '../theme/accent';
 import type { ThemeId } from '../theme/themes';
+import { loadHigh } from '../components/meme/Meme';
 
 /**
  * Keeps the page on the theme in the stored settings. The bootstrap has already applied the
@@ -37,10 +38,26 @@ export function useThemeSync(): void {
   const art = settings?.background_art;
   const artUrl = art?.url;
   const artStyle = art?.style;
+  const fewerEffects = settings?.fewer_effects === true;
   useEffect(() => {
     if (!loaded) return;
-    applyLook({ contrast, uiSize, art: artUrl ? { url: artUrl, style: artStyle === 'plain' ? 'plain' : 'blur' } : null });
-  }, [loaded, contrast, uiSize, artUrl, artStyle]);
+    applyLook({
+      contrast,
+      uiSize,
+      art: artUrl ? { url: artUrl, style: artStyle === 'plain' ? 'plain' : 'blur' } : null,
+      fewerEffects,
+    });
+  }, [loaded, contrast, uiSize, artUrl, artStyle, fewerEffects]);
+
+  // Meme mode's looks hang on <html>: `data-meme` for the level, and `data-fun` (fun.css, the
+  // Medium layer) stays on under High. High's CSS and lines arrive with its lazy chunk.
+  const memeLevel = settings?.meme_mode ?? 'low';
+  useEffect(() => {
+    const root = document.documentElement;
+    root.dataset.meme = memeLevel;
+    root.toggleAttribute('data-fun', memeLevel !== 'low');
+    if (memeLevel === 'high') void loadHigh();
+  }, [memeLevel]);
 }
 
 /** The selected theme and a setter that applies it at once and saves it. */

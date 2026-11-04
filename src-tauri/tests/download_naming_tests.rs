@@ -543,7 +543,7 @@ fn resumable_part_files_of_queued_downloads_survive_the_startup_cleanup() {
     std::fs::create_dir_all(name(&gone, "hls")).unwrap();
 
     // Everything of the deleted row goes, and of the queued row only what cannot resume.
-    assert_eq!(remove_stale_part_files(&dir, &[queued.clone()]), 7);
+    assert_eq!(remove_stale_part_files(&dir, std::slice::from_ref(&queued)), 7);
     for role in ["download", "resume", "hls"] {
         assert!(name(&queued, role).exists(), "{} is kept", role);
         assert!(!name(&gone, role).exists(), "{} of another row is removed", role);
@@ -765,4 +765,14 @@ fn deleting_refuses_anything_that_is_not_a_downloaded_video_file() {
     assert!(delete_finished_files(&dir.join("link.mp4")).is_err(), "a symbolic link");
     assert!(notes.exists() && dir.join("folder.mkv").is_dir() && dir.join("link.mp4").exists());
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_disk_counts_as_full_only_below_the_save_limit() {
+    use anix_lib::downloads::{disk_is_low, disk_space, LOW_DISK_BYTES};
+    let dir = std::env::temp_dir();
+    let (free, _) = disk_space(&dir).expect("temp dir has a disk");
+    assert_eq!(disk_is_low(&dir), free < LOW_DISK_BYTES);
+    // A folder that cannot be read is not reported as full.
+    assert!(!disk_is_low(std::path::Path::new("/no/such/anix/folder")));
 }

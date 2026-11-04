@@ -64,7 +64,9 @@ pub struct MacRelease {
     /// The upstream version the build was made from, like `1.3.0`.
     pub version: String,
     pub build: u64,
-    /// What the update dialog shows. Its `version` reads `1.3.0-mac.12`, and its `appimage`
+    /// What the update dialog shows. Its `version` reads `1.3.0.12`: the build number as a fourth
+    /// part, which version comparison counts as newer than `1.3.0` (a `-` suffix would make it a
+    /// pre-release, older than `1.3.0`, and hide the update). Its `appimage`
     /// field (the dialog's "can be installed" asset) holds the archive.
     pub info: UpdateInfo,
 }
@@ -98,7 +100,7 @@ pub fn parse_manifest(json: &serde_json::Value, repo: &str) -> Option<MacRelease
         .to_string();
     let notes = json["notes"].as_str().map(str::trim).filter(|n| !n.is_empty());
     let mut info = UpdateInfo::new(
-        format!("{}-mac.{}", version, build),
+        format!("{}.{}", version, build),
         notes.unwrap_or("No changelog available.").to_string(),
         json["published_at"].as_str().unwrap_or("").trim().to_string(),
         release_url,
@@ -107,6 +109,7 @@ pub fn parse_manifest(json: &serde_json::Value, repo: &str) -> Option<MacRelease
         url: url.to_string(),
         sha256,
         size: json["size"].as_u64().filter(|s| *s > 0),
+        min_glibc: None,
     });
     Some(MacRelease { version, build, info })
 }

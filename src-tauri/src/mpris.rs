@@ -4,7 +4,7 @@
 //! player as `MPRIS_EVENT` events.
 //!
 //! MPRIS is a Linux (D-Bus) protocol; on macOS both commands succeed without doing anything.
-#![cfg_attr(not(target_os = "linux"), allow(dead_code, unused_imports))]
+#![cfg_attr(not(target_os = "linux"), allow(dead_code, unused_imports, reason = "MPRIS needs D-Bus, which only Linux has"))]
 
 use std::collections::HashMap;
 use std::time::Instant;

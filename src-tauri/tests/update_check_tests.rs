@@ -3,8 +3,11 @@
 mod plugin_support;
 
 use anix_lib::clients::update::{
-    appimage_target, backup_path, default_download_url, download_and_install, fetch_update_info, install_verified,
-    is_newer_version, parse_version_document, sha256_file, version_document_url, AppImageAsset, UpdateInfo, SITE_URL,
+    appimage_target, backup_path, default_download_url, download_and_install, fetch_update_info,
+    first_bad_version_warning, install_verified, is_bad_version, is_newer_version, offered_release, offers_build_switch,
+    parse_bad_versions, pick_appimage, system_glibc,
+    parse_version_document, record_update, roll_back, rollback_available, sha256_file, version_document_url,
+    AppImageAsset, UpdateInfo, ROLLBACK_FILE, SITE_URL,
 };
 use std::path::{Path, PathBuf};
 use plugin_support::{Req, Resp, Site};
@@ -164,7 +167,10 @@ impl Drop for Install {
 }
 
 fn sha256(bytes: &[u8]) -> String {
-    let file = std::env::temp_dir().join(format!("anix-hash-{}-{}", std::process::id(), bytes.len()));
+    // One file per call: tests run in parallel and may hash different data of the same length.
+    static CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let call = CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let file = std::env::temp_dir().join(format!("anix-hash-{}-{}", std::process::id(), call));
     std::fs::write(&file, bytes).unwrap();
     let hash = sha256_file(&file).unwrap();
     let _ = std::fs::remove_file(file);
@@ -182,7 +188,7 @@ fn the_manifest_lists_the_appimage_with_its_checksum() {
     .unwrap();
     assert_eq!(
         info.appimage,
-        Some(AppImageAsset { url: "https://dl.example/Anix_1.3.0.AppImage".into(), sha256: "ab".repeat(32), size: Some(9000) })
+        Some(AppImageAsset { url: "https://dl.example/Anix_1.3.0.AppImage".into(), sha256: "ab".repeat(32), size: Some(9000), min_glibc: None })
     );
     let shape = serde_json::to_value(&info).unwrap();
     assert_eq!(shape["appimage"]["sha256"], json!("ab".repeat(32)));
@@ -209,6 +215,27 @@ fn versions_compare_like_the_frontend() {
     assert!(!is_newer_version("1.2.0", "1.2.0"));
     assert!(!is_newer_version("1.2.0", "1.3.0"));
     assert!(!is_newer_version("1.3.0-beta", "1.3.0"));
+}
+
+#[test]
+fn a_pre_release_is_offered_its_final_release() {
+    assert!(is_newer_version("1.3.0", "1.3.0-rc1"));
+    assert!(is_newer_version("1.3.0", "1.3.0-rc.2"));
+    assert!(!is_newer_version("1.3.0-rc.2", "1.3.0"));
+    assert!(!is_newer_version("1.3.0-rc1", "1.3.0"));
+    assert!(is_newer_version("1.3.0-rc.1", "1.2.9"));
+    assert!(!is_newer_version("1.3.0-rc.1", "1.3.1"));
+    // Pre-releases of one core compare by identifier: numbers numerically, below words.
+    assert!(is_newer_version("1.3.0-rc.10", "1.3.0-rc.2"));
+    assert!(is_newer_version("1.3.0-rc", "1.3.0-beta"));
+    assert!(is_newer_version("1.3.0-alpha.1", "1.3.0-alpha"));
+    assert!(is_newer_version("1.3.0-alpha.beta", "1.3.0-alpha.1"));
+    assert!(!is_newer_version("1.3.0-rc.1", "1.3.0-rc.1"));
+    // Build metadata is ignored, a leading "v" is allowed.
+    assert!(!is_newer_version("1.3.0+build.7", "1.3.0"));
+    assert!(!is_newer_version("1.3.0", "v1.3.0+build.7"));
+    assert!(is_newer_version("v1.3.0+b-2", "1.3.0-rc.1"));
+    assert!(!is_newer_version("1.3.0-rc.1+b.9", "1.3.0-rc.1"));
 }
 
 #[test]
@@ -266,7 +293,7 @@ async fn the_update_is_downloaded_next_to_the_appimage_and_checked_before_it_rep
     })
     .await;
     let install = Install::new("download");
-    let good = AppImageAsset { url: site.url("/Anix_1.3.0.AppImage"), sha256: sha256(b"new version"), size: None };
+    let good = AppImageAsset { url: site.url("/Anix_1.3.0.AppImage"), sha256: sha256(b"new version"), size: None, min_glibc: None };
 
     // A file that does not match the manifest never replaces the AppImage.
     let tampered = AppImageAsset { sha256: HASH_OF_NEW.to_string(), ..good.clone() };
@@ -286,4 +313,146 @@ async fn the_update_is_downloaded_next_to_the_appimage_and_checked_before_it_rep
     assert_eq!(seen.last().copied(), Some(1.0));
     assert!(Path::new(&install.0).join("Anix.AppImage.bak").exists());
     assert_eq!(install.names(), vec!["Anix.AppImage", "Anix.AppImage.bak"], "the partial download is gone");
+}
+
+#[test]
+fn the_site_can_list_versions_with_a_known_problem() {
+    let listed = parse_bad_versions(&json!(["1.4.0", "v1.4.1", " 1.4.2 ", 7, null, "", "1.4.0; rm -rf /", "x".repeat(40)]));
+    assert_eq!(listed, vec!["1.4.0", "1.4.1", "1.4.2"], "only plain version strings are kept");
+    assert!(parse_bad_versions(&json!("1.4.0")).is_empty(), "not a list");
+    assert!(parse_bad_versions(&serde_json::Value::Null).is_empty());
+    let many: Vec<String> = (0..80).map(|n| format!("1.0.{}", n)).collect();
+    assert_eq!(parse_bad_versions(&json!(many)).len(), 50, "the list is capped");
+
+    let info = parse_version_document(&json!({"version": "1.4.1", "bad_versions": ["1.4.0"]}), SITE_URL).unwrap();
+    assert!(is_bad_version(&info, "1.4.0"));
+    assert!(is_bad_version(&info, "v1.4.0"));
+    assert!(!is_bad_version(&info, "1.4.1"));
+    let none = parse_version_document(&json!({"version": "1.4.1"}), SITE_URL).unwrap();
+    assert!(none.bad_versions.is_empty(), "older version files have no list");
+}
+
+#[test]
+fn an_update_can_be_undone_while_its_backup_is_kept() {
+    let install = Install::new("rollback");
+    let data = install.0.join("data");
+    std::fs::create_dir_all(&data).unwrap();
+    let downloaded = install.0.join(".Anix.AppImage.anix-update");
+    std::fs::write(&downloaded, b"new version").unwrap();
+    let backup = install_verified(&downloaded, &install.target(), &sha256(b"new version")).unwrap();
+
+    assert!(rollback_available(&data, "1.4.0", &install.target()).is_none(), "nothing recorded yet");
+    record_update(&data, "1.3.2", "1.4.0", &backup);
+    assert!(rollback_available(&data, "1.3.2", &install.target()).is_none(), "only the version that was installed offers it");
+    assert_eq!(rollback_available(&data, "1.4.0", &install.target()).unwrap().from, "1.3.2");
+
+    let record = roll_back(&data, "1.4.0", &install.target()).unwrap();
+    assert_eq!(record.from, "1.3.2");
+    assert_eq!(std::fs::read(install.target()).unwrap(), b"old version", "the previous AppImage is back");
+    assert_eq!(install.names(), vec!["Anix.AppImage", "data"], "the backup became the AppImage");
+    assert!(!data.join(ROLLBACK_FILE).exists(), "the record is used up");
+    assert!(roll_back(&data, "1.4.0", &install.target()).is_err(), "and cannot be used twice");
+}
+
+#[test]
+fn going_back_needs_the_backup_file() {
+    let install = Install::new("rollback-gone");
+    let data = install.0.join("data");
+    std::fs::create_dir_all(&data).unwrap();
+    record_update(&data, "1.3.2", "1.4.0", &backup_path(&install.target()));
+    assert!(!data.join(ROLLBACK_FILE).exists(), "no backup, no record");
+    std::fs::write(data.join(ROLLBACK_FILE), br#"{"from":"1.3.2","to":"1.4.0","backup":"1:1.1"}"#).unwrap();
+    // The user deleted the .bak (or never had one): no offer, and the AppImage stays.
+    assert!(rollback_available(&data, "1.4.0", &install.target()).is_none());
+    assert!(roll_back(&data, "1.4.0", &install.target()).is_err());
+    assert_eq!(std::fs::read(install.target()).unwrap(), b"old version");
+    // A broken record is no offer either.
+    std::fs::write(data.join(ROLLBACK_FILE), b"{not json").unwrap();
+    assert!(rollback_available(&data, "1.4.0", &install.target()).is_none());
+}
+
+#[test]
+fn a_backup_made_after_the_record_is_not_offered() {
+    let install = Install::new("rollback-stale");
+    let data = install.0.join("data");
+    std::fs::create_dir_all(&data).unwrap();
+    let downloaded = install.0.join(".Anix.AppImage.anix-update");
+    // A different size from "old version", so the check does not hang on timestamp granularity.
+    std::fs::write(&downloaded, b"version 1.4.0").unwrap();
+    let backup = install_verified(&downloaded, &install.target(), &sha256(b"version 1.4.0")).unwrap();
+    record_update(&data, "1.3.2", "1.4.0", &backup);
+    assert!(rollback_available(&data, "1.4.0", &install.target()).is_some());
+
+    // The next update backs up 1.4.0 and then fails before its rename: the .bak now holds the
+    // running version, so the old record must not offer "Go back to 1.3.2".
+    std::fs::remove_file(&backup).unwrap();
+    std::fs::hard_link(install.target(), &backup).unwrap();
+    assert!(rollback_available(&data, "1.4.0", &install.target()).is_none());
+    assert!(roll_back(&data, "1.4.0", &install.target()).is_err());
+    assert_eq!(std::fs::read(install.target()).unwrap(), b"version 1.4.0");
+}
+
+#[test]
+fn a_release_the_site_marks_as_bad_is_not_offered() {
+    let bad = parse_version_document(&json!({"version": "1.5.0", "bad_versions": ["1.5.0"]}), SITE_URL);
+    assert!(offered_release(bad).is_none());
+    let fine = parse_version_document(&json!({"version": "1.5.1", "bad_versions": ["1.5.0"]}), SITE_URL);
+    assert_eq!(offered_release(fine).unwrap().version, "1.5.1");
+    assert!(offered_release(None).is_none());
+}
+
+#[test]
+fn the_bad_version_notice_comes_once_per_version() {
+    let install = Install::new("bad-once");
+    assert!(first_bad_version_warning(&install.0, "1.4.0"));
+    assert!(!first_bad_version_warning(&install.0, "1.4.0"), "not again on the next start");
+    assert!(first_bad_version_warning(&install.0, "1.4.1"), "a new listed version warns again");
+}
+
+fn two_builds(version: &str) -> UpdateInfo {
+    parse_version_document(
+        &json!({
+            "version": version,
+            "appimage": { "url": "https://dl.example/Anix.AppImage", "sha256": "aa".repeat(32) },
+            "appimage_modern": { "url": "https://dl.example/Anix-modern.AppImage", "sha256": "bb".repeat(32), "min_glibc": "2.39" }
+        }),
+        "https://site.example",
+    )
+    .unwrap()
+}
+
+#[test]
+fn a_system_with_a_new_enough_glibc_gets_the_newer_base_appimage() {
+    let info = two_builds("1.4.0");
+    assert_eq!(info.appimage_modern.as_ref().unwrap().min_glibc.as_deref(), Some("2.39"));
+    let url = |modern, glibc| pick_appimage(&info, modern, glibc).map(|a| a.url.as_str());
+    assert_eq!(url(false, Some("2.39")), Some("https://dl.example/Anix-modern.AppImage"));
+    assert_eq!(url(false, Some("2.41")), Some("https://dl.example/Anix-modern.AppImage"));
+    // Older or unknown glibc keeps the classic build, which runs everywhere.
+    assert_eq!(url(false, Some("2.35")), Some("https://dl.example/Anix.AppImage"));
+    assert_eq!(url(false, None), Some("https://dl.example/Anix.AppImage"));
+    // A newer-base install stays on its build.
+    assert_eq!(url(true, None), Some("https://dl.example/Anix-modern.AppImage"));
+    // A site that lists only the classic build still updates everyone.
+    let classic = parse_version_document(&json!({ "version": "1.4.0", "appimage": { "url": "https://dl.example/Anix.AppImage", "sha256": "aa".repeat(32) } }), "https://s.example").unwrap();
+    assert_eq!(pick_appimage(&classic, true, None).map(|a| a.url.as_str()), Some("https://dl.example/Anix.AppImage"));
+    assert!(system_glibc().is_some_and(|v| v.starts_with("2.")));
+}
+
+#[test]
+fn a_classic_install_may_switch_builds_only_at_the_same_version() {
+    let info = two_builds("1.4.0");
+    assert!(offers_build_switch(&info, "1.4.0", false, Some("2.39")));
+    assert!(!offers_build_switch(&info, "1.4.0", false, Some("2.35")), "glibc too old");
+    assert!(!offers_build_switch(&info, "1.4.0", true, Some("2.39")), "already the newer base");
+    assert!(!offers_build_switch(&info, "1.3.2", false, Some("2.39")), "a newer version is an ordinary update");
+    assert!(!offers_build_switch(&two_builds("1.3.0"), "1.4.0", false, Some("2.39")), "never an older version");
+    // A malformed min_glibc means the newer build is never picked for a classic install.
+    let bad = parse_version_document(
+        &json!({ "version": "1.4.0", "appimage_modern": { "url": "https://dl.example/m", "sha256": "bb".repeat(32), "min_glibc": "two" } }),
+        "https://s.example",
+    )
+    .unwrap();
+    assert_eq!(bad.appimage_modern.as_ref().unwrap().min_glibc, None);
+    assert!(!offers_build_switch(&bad, "1.4.0", false, Some("2.41")));
 }

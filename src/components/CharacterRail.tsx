@@ -1,4 +1,5 @@
 import React, { useRef } from 'react';
+import { scrollBehavior } from '../lib/motion';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { ShimmerImage } from './ShimmerImage';
 import { Button } from './ui/Button';
@@ -6,6 +7,7 @@ import { useOpenExternal } from '../hooks/useOpenExternal';
 import type { CharacterEdge } from '../types';
 import { languageLabel, normalizeLanguage } from '../lib/languages';
 import { t, type TKey } from '../i18n';
+import { Meme } from './meme/Meme';
 
 interface CharacterRailProps {
   characters?: CharacterEdge[];
@@ -43,7 +45,9 @@ export const CharacterRail: React.FC<CharacterRailProps> = ({ characters = [], u
     if (!unavailableFrom) return null;
     return (
       <section className="flex flex-col gap-2">
-        <h2 className="text-xl font-semibold text-text-primary">{t('characterRail.characters')}</h2>
+        <h2 className="text-xl font-semibold text-text-primary">
+          <Meme spot="chars" plain={t('characterRail.characters')} />
+        </h2>
         <p className="text-[13px] text-text-muted">{t('characterRail.unavailableFrom', { name: unavailableFrom })}</p>
       </section>
     );
@@ -53,14 +57,16 @@ export const CharacterRail: React.FC<CharacterRailProps> = ({ characters = [], u
     scrollRef.current?.scrollBy({
       left: direction === 'left' ? -672 : 672,
       // An explicit behaviour overrides the CSS reduced-motion rule, so check it here.
-      behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
+      behavior: scrollBehavior(),
     });
   };
 
   return (
     <section className="group/rail flex flex-col gap-3">
       <div className="flex items-center justify-between gap-4">
-        <h2 className="text-xl font-semibold text-text-primary">{t('characterRail.characters')}</h2>
+        <h2 className="text-xl font-semibold text-text-primary">
+          <Meme spot="chars" plain={t('characterRail.characters')} />
+        </h2>
         <div dir="ltr" className="flex items-center gap-1 opacity-0 transition-opacity focus-within:opacity-100 group-hover/rail:opacity-100">
           <Button icon variant="ghost" size="sm" aria-label={t('characterRail.scrollLeft')} onClick={() => scroll('left')}>
             <ChevronLeft aria-hidden="true" className="h-4 w-4" />

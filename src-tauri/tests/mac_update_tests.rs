@@ -75,7 +75,7 @@ fn the_update_document_lives_in_the_forks_latest_release() {
 fn a_build_is_shown_as_its_version_with_the_build_number() {
     let r = release("1.3.0", 12);
     assert_eq!((r.version.as_str(), r.build), ("1.3.0", 12));
-    assert_eq!(r.info.version, "1.3.0-mac.12");
+    assert_eq!(r.info.version, "1.3.0.12");
     assert_eq!(r.info.changelog, "fix(macos): the icon");
     assert_eq!(r.info.release_url, "https://github.com/someone/Anix/releases/tag/mac-v1.3.0-b12");
     let asset = r.info.appimage.unwrap();
@@ -148,7 +148,7 @@ async fn the_check_offers_only_a_newer_build() {
 
     *answer.lock().unwrap() = Resp::json(manifest("1.3.0", 5));
     let offered = check_at(&client, &url, REPO, "1.3.0", 4).await.unwrap().unwrap();
-    assert_eq!(offered.version, "1.3.0-mac.5");
+    assert_eq!(offered.version, "1.3.0.5");
 
     // An unusable document is an error, not "up to date".
     *answer.lock().unwrap() = Resp::json(json!({ "version": "1.3.0" }));
@@ -268,7 +268,7 @@ async fn the_archive_is_downloaded_with_progress_and_installed() {
         _ => Resp::status(404),
     })
     .await;
-    let asset = AppImageAsset { url: site.url("/Anix.app.tar.gz"), sha256: sha, size: Some(bytes.len() as u64) };
+    let asset = AppImageAsset { url: site.url("/Anix.app.tar.gz"), sha256: sha, size: Some(bytes.len() as u64), min_glibc: None };
     let mut seen = Vec::new();
     download_and_install(&reqwest::Client::new(), &asset, &installed, |f| seen.push(f)).await.unwrap();
     assert_eq!(marker(&installed), "new");
@@ -279,4 +279,14 @@ async fn the_archive_is_downloaded_with_progress_and_installed() {
     assert!(download_and_install(&reqwest::Client::new(), &gone, &installed, |_| {}).await.is_err());
     assert_eq!(marker(&installed), "new");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_offered_build_counts_as_newer_than_the_installed_version() {
+    use anix_lib::clients::update::is_newer_version;
+    // The page compares the offered version with the app's own the same way.
+    let r = release("1.4.0", 26);
+    assert!(is_newer_version(&r.info.version, "1.4.0"));
+    assert!(is_newer_version(&release("1.4.0", 27).info.version, &r.info.version));
+    assert!(!is_newer_version(&r.info.version, &r.info.version));
 }

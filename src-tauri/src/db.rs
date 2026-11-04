@@ -87,6 +87,13 @@ pub fn get_app_dir() -> Result<PathBuf, AppError> {
     ensure_dir(chosen, "data")
 }
 
+/// Where [`get_app_dir`] points, without creating it. For start-up code that runs before the
+/// folder rename in `migration`.
+pub fn app_dir_path() -> Option<PathBuf> {
+    let home_base = dirs::home_dir().map(|h| h.join(".local").join("share"));
+    choose_app_dir(dirs::data_dir(), home_base, &[DB_FILE_NAME, LEGACY_DB_FILE_NAME])
+}
+
 /// `$XDG_CONFIG_HOME/anix`, normally `~/.config/anix`.
 pub fn get_config_dir() -> Result<PathBuf, AppError> {
     let home_base = dirs::home_dir().map(|h| h.join(".config"));
@@ -518,7 +525,7 @@ async fn migrate_watch_history(conn: &mut SqliteConnection) -> Result<(), AppErr
     let has = |name: &str| columns.iter().any(|c| c == name);
 
     let up_to_date = key == ["anilist_id", "episode_number"]
-        && WATCH_HISTORY_COLUMNS.iter().all(|c| has(*c));
+        && WATCH_HISTORY_COLUMNS.iter().all(|c| has(c));
     if up_to_date {
         return Ok(());
     }
@@ -1127,80 +1134,6 @@ pub async fn mark_watchlist_synced(pool: &SqlitePool, anilist_id: i32, status: &
     Ok(())
 }
 
-pub async fn upsert_library_entry(
-    pool: &SqlitePool,
-    entry: &crate::models::MediaListEntry,
-) -> Result<(), AppError> {
-    let now = current_unix_millis();
-
-    sqlx::query(
-        r#"
-        INSERT OR REPLACE INTO remote_library (anilist_id, status, progress, score, title, cover, format, episodes, average_score, synced_at)
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
-        "#
-    )
-    .bind(entry.id)
-    .bind(&entry.status)
-    .bind(entry.progress)
-    .bind(entry.score)
-    .bind(&entry.title)
-    .bind(&entry.cover)
-    .bind(&entry.format_str)
-    .bind(entry.total_episodes)
-    .bind(entry.average_score)
-    .bind(now)
-    .execute(pool)
-    .await?;
-
-    Ok(())
-}
-
-pub async fn get_library_entries(
-    pool: &SqlitePool,
-    status_filter: Option<String>,
-) -> Result<Vec<crate::models::MediaListEntry>, AppError> {
-    let rows = if let Some(ref status) = status_filter {
-        sqlx::query(
-            r#"
-            SELECT anilist_id, status, progress, score, title, cover, format, episodes, average_score
-            FROM remote_library
-            WHERE status = ?1
-            ORDER BY title ASC
-            "#
-        )
-        .bind(status)
-        .fetch_all(pool)
-        .await?
-    } else {
-        sqlx::query(
-            r#"
-            SELECT anilist_id, status, progress, score, title, cover, format, episodes, average_score
-            FROM remote_library
-            ORDER BY title ASC
-            "#
-        )
-        .fetch_all(pool)
-        .await?
-    };
-
-    let entries = rows
-        .into_iter()
-        .map(|r| crate::models::MediaListEntry {
-            id: r.get("anilist_id"),
-            status: r.get("status"),
-            progress: r.get("progress"),
-            score: r.get("score"),
-            title: r.get("title"),
-            cover: r.get("cover"),
-            format_str: r.get("format"),
-            total_episodes: r.get("episodes"),
-            average_score: r.get("average_score"),
-        })
-        .collect();
-
-    Ok(entries)
-}
-
 fn parse_download_status(status: &str) -> Option<&'static str> {
     match status.trim().to_ascii_uppercase().as_str() {
         STATUS_QUEUED => Some(STATUS_QUEUED),
@@ -1447,19 +1380,6 @@ fn map_download_row(r: SqliteRow) -> DownloadRecord {
     }
 }
 
-pub async fn get_downloads(
-    pool: &SqlitePool,
-    anilist_id: i64,
-) -> Result<Vec<DownloadRecord>, AppError> {
-    let sql = format!(
-        "SELECT {} FROM downloads WHERE anilist_id = ?1 ORDER BY episode_num ASC",
-        DOWNLOAD_COLUMNS
-    );
-    let rows = sqlx::query(&sql).bind(anilist_id).fetch_all(pool).await?;
-
-    Ok(rows.into_iter().map(map_download_row).collect())
-}
-
 pub async fn get_all_downloads(pool: &SqlitePool) -> Result<Vec<DownloadRecord>, AppError> {
     let sql = format!(
         "SELECT {} FROM downloads ORDER BY updated_at DESC",
@@ -1642,25 +1562,6 @@ pub async fn set_notifier_state(pool: &SqlitePool, key: &str, value: i64) -> Res
     Ok(())
 }
 
-pub async fn get_notification_preference(
-    pool: &SqlitePool,
-    media_id: i64,
-) -> Result<Option<NotificationPreference>, AppError> {
-    let row = sqlx::query(
-        "SELECT media_id, enabled, media_title, cover_image FROM notification_preferences WHERE media_id = ?1",
-    )
-    .bind(media_id)
-    .fetch_optional(pool)
-    .await?;
-
-    Ok(row.map(|r| NotificationPreference {
-        media_id: r.get("media_id"),
-        enabled: r.get::<i32, _>("enabled") != 0,
-        media_title: r.get("media_title"),
-        cover_image: r.get("cover_image"),
-    }))
-}
-
 pub async fn list_notification_preferences(
     pool: &SqlitePool,
 ) -> Result<Vec<NotificationPreference>, AppError> {
@@ -1801,20 +1702,15 @@ pub async fn cache_filler_episodes(
 static PLAYLIST_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// `pl-<ms since epoch>-<per-process counter>-<random>`, all in hex.
-fn new_playlist_id() -> String {
-    use std::hash::{BuildHasher, Hasher};
-
+fn new_playlist_id() -> std::io::Result<String> {
     let millis = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis())
         .unwrap_or(0);
     let counter = PLAYLIST_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
-    // `RandomState` is seeded from the operating system's random source.
-    let random = std::collections::hash_map::RandomState::new()
-        .build_hasher()
-        .finish();
+    let random = crate::system::random::hex(8)?;
 
-    format!("pl-{:x}-{:x}-{:016x}", millis, counter, random)
+    Ok(format!("pl-{:x}-{:x}-{}", millis, counter, random))
 }
 
 pub async fn create_custom_playlist(
@@ -1823,7 +1719,7 @@ pub async fn create_custom_playlist(
     description: Option<&str>,
 ) -> Result<CustomPlaylist, AppError> {
     let now = current_unix_timestamp();
-    let id = new_playlist_id();
+    let id = new_playlist_id().map_err(|e| AppError::Other(e.to_string()))?;
     sqlx::query(
         r#"
         INSERT INTO custom_playlists (id, name, description, created_at, updated_at)
@@ -1986,15 +1882,6 @@ pub async fn add_items_to_custom_playlist(
 
     tx.commit().await?;
     Ok(items.len())
-}
-
-pub async fn add_item_to_custom_playlist(
-    pool: &SqlitePool,
-    item: CustomPlaylistItem,
-) -> Result<(), AppError> {
-    add_items_to_custom_playlist(pool, std::slice::from_ref(&item))
-        .await
-        .map(|_| ())
 }
 
 pub async fn remove_item_from_custom_playlist(

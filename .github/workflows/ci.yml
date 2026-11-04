@@ -18,10 +18,21 @@ jobs:
   test-and-verify:
     name: Build & Test
     runs-on: ubuntu-22.04
+    # About 40 test programs each link the whole app; with full debug info they filled the runner's disk.
+    env:
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      CARGO_INCREMENTAL: 0
 
     steps:
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Install system dependencies
         run: |
@@ -54,8 +65,29 @@ jobs:
           npm run i18n:check
           npm run i18n:test
 
+      # CONSTRAINTS.md: no new suppressions, stubs, skipped tests, lost assertions or loosened numbers.
+      - name: Quality floor
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          node --test scripts/floor-guard-test.mjs
+          if [ -n "$BASE_REF" ]; then base="origin/$BASE_REF"
+          elif [ -n "$BEFORE" ] && [ "$BEFORE" != 0000000000000000000000000000000000000000 ]; then
+            # After a force push the old tip is on no branch, so checkout did not fetch it.
+            git cat-file -e "$BEFORE^{commit}" 2>/dev/null || git fetch --no-tags -q origin "$BEFORE" \
+              || { echo "::error::cannot fetch the pushed-over commit $BEFORE; the floor guard would check only part of the push"; exit 2; }
+            base="$BEFORE"
+          else
+            echo "::warning::no push base (manual run or new branch): the floor guard checks only the last commit"
+            base="HEAD~1"
+          fi
+          node scripts/floor-guard.mjs --base "$base"
+
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
 
       - name: Cache Cargo dependencies
         uses: actions/cache@v4
@@ -72,6 +104,9 @@ jobs:
 
       - name: Cargo Check
         run: cargo check --manifest-path src-tauri/Cargo.toml
+
+      - name: Clippy (warnings are errors)
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 
       - name: Run Backend Unit & Integration Tests
         run: cargo test --manifest-path src-tauri/Cargo.toml -- --nocapture

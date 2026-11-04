@@ -76,9 +76,34 @@ assert.equal(shouldPromptUpdate(null, undefined, '/'), false, 'no update');
 assert.equal(needsSetup('1.3.0', '1.3.1'), true);
 assert.equal(needsSetup('1.4.0', '1.3.0'), false, 'a downgrade does not ask');
 assert.equal(isNewerVersion('1.10.0', '1.9.9'), true);
-// macOS builds are offered as `<version>-mac.<build>`; the backend has already decided they are newer.
-assert.equal(isNewerVersion('1.3.0-mac.5', '1.3.0'), true);
-assert.equal(isNewerVersion('1.4.0-mac.1', '1.3.0'), true);
+// macOS builds are offered as `<version>.<build>`: newer than the plain version and than earlier
+// builds of it. (A `-mac.<build>` suffix would be a pre-release, older than the plain version.)
+assert.equal(isNewerVersion('1.3.0.5', '1.3.0'), true);
+assert.equal(isNewerVersion('1.4.0.1', '1.3.0'), true);
+assert.equal(isNewerVersion('1.4.0.27', '1.4.0.26'), true);
+assert.equal(isNewerVersion('1.4.0.26', '1.4.0.26'), false);
+assert.equal(shouldPromptUpdate('1.4.0.27', '1.4.0.26', '/'), true);
+assert.equal(shouldPromptUpdate('1.4.0.26', '1.4.0.26', '/'), false);
+// Pre-releases: lower than their final release, semver order between them, `+build` ignored
+assert.equal(isNewerVersion('1.3.0', '1.3.0-rc1'), true, 'a release candidate is offered the final');
+assert.equal(isNewerVersion('1.3.0', '1.3.0-rc.2'), true);
+assert.equal(isNewerVersion('1.3.0-rc.2', '1.3.0'), false);
+assert.equal(isNewerVersion('1.3.0-rc1', '1.3.0'), false);
+assert.equal(isNewerVersion('1.3.0-rc.1', '1.2.9'), true);
+assert.equal(isNewerVersion('1.3.0-rc.1', '1.3.1'), false);
+assert.equal(isNewerVersion('1.3.0-rc.10', '1.3.0-rc.2'), true, 'numeric identifiers compare numerically');
+assert.equal(isNewerVersion('1.3.0-rc', '1.3.0-beta'), true);
+assert.equal(isNewerVersion('1.3.0-alpha.1', '1.3.0-alpha'), true);
+assert.equal(isNewerVersion('1.3.0-alpha.beta', '1.3.0-alpha.1'), true, 'words sort above numbers');
+assert.equal(isNewerVersion('1.3.0-rc.1', '1.3.0-rc.1'), false);
+assert.equal(isNewerVersion('1.3.0+build.7', '1.3.0'), false);
+assert.equal(isNewerVersion('1.3.0', 'v1.3.0+build.7'), false);
+assert.equal(isNewerVersion('v1.3.0+b-2', '1.3.0-rc.1'), true);
+assert.equal(isNewerVersion('1.2.1', '1.2'), true);
+assert.equal(isNewerVersion('1.2.0', '1.2'), false);
+assert.equal(needsSetup('1.3.0-rc.1', '1.3.0'), true, 'setup again after moving from a pre-release to the final');
+assert.equal(needsSetup('1.3.0', '1.3.0-rc.1'), false);
+assert.equal(shouldPromptUpdate('1.3.0', '1.3.0-rc.1', '/'), true);
 
 // First/second/third choice
 assert.deepEqual(withChoice(['en'], 1, 'es'), ['en', 'es']);
@@ -122,6 +147,14 @@ assert.deepEqual(errorKeys(bell, false), [], 'without Details the reason stays')
 const shownKey = errorKeys(bell, false).find((k) => k in catalogs.en);
 assert.ok((shownKey ? catalogs.fr[shownKey] : bell).includes('Turn on the bell'), 'fr toast keeps the reason');
 assert.deepEqual(errorKeys('Network error: AniList HTTP 403: disabled', false), ['errors.CAT-403', 'errors.CAT-4xx', 'errors.CAT-ERR']);
+
+// Settings search highlight: every query word is marked, in any case, and nothing is lost.
+const { markParts } = await import('../src/lib/textMarks.ts');
+assert.deepEqual(markParts('Skip intros', ''), [{ text: 'Skip intros', hit: false }]);
+assert.deepEqual(markParts('Skip intros', 'INTRO'), [{ text: 'Skip ', hit: false }, { text: 'intro', hit: true }, { text: 's', hit: false }]);
+assert.deepEqual(markParts('Buffer (MB)', '(mb'), [{ text: 'Buffer ', hit: false }, { text: '(MB', hit: true }, { text: ')', hit: false }], 'regex characters are plain text');
+assert.equal(markParts('Hide adult content', 'con adu').filter((p) => p.hit).length, 2);
+assert.equal(markParts('Hide adult content', 'con adu').map((p) => p.text).join(''), 'Hide adult content');
 
 console.log('i18n tests passed');
 

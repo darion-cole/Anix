@@ -1,7 +1,7 @@
 //! What the desktop says about window buttons and the accent colour, so the custom title
 //! bar and the theme can follow it. Every lookup is optional and falls back quietly.
 //! On macOS the layout is fixed (buttons on the left) and the Linux lookups are not used.
-#![cfg_attr(target_os = "macos", allow(dead_code))]
+#![cfg_attr(target_os = "macos", allow(dead_code, reason = "the GNOME/KDE lookups are not used on macOS"))]
 
 use crate::commands::player::sanitized_command;
 use serde::Serialize;

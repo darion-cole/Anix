@@ -12,17 +12,6 @@ export function useWatchlist() {
   });
 }
 
-export function useIsInWatchlist(anilistId: number | null) {
-  return useQuery<boolean>({
-    queryKey: ['isInWatchlist', anilistId],
-    queryFn: async () => {
-      if (!anilistId) return false;
-      return await invoke<boolean>('is_in_watchlist', { anilistId });
-    },
-    enabled: !!anilistId,
-  });
-}
-
 export function useWatchedEpisodes(anilistId: number | null) {
   return useQuery<number[]>({
     queryKey: ['watchedEpisodes', anilistId],
@@ -107,9 +96,8 @@ export function useToggleWatchlist() {
         });
       }
     },
-    onSuccess: (_, variables) => {
+    onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['watchlist'] });
-      queryClient.invalidateQueries({ queryKey: ['isInWatchlist', variables.anilistId] });
     },
   });
 }
@@ -157,6 +145,7 @@ export function useUpdateWatchProgress() {
       queryClient.invalidateQueries({ queryKey: ['homeData'] });
       queryClient.invalidateQueries({ queryKey: ['watchedEpisodes', variables.anilistId] });
       queryClient.invalidateQueries({ queryKey: ['watchedHistory'] });
+      queryClient.invalidateQueries({ queryKey: ['watchTimes'] });
     },
   });
 }
@@ -193,6 +182,7 @@ export function useSetEpisodesWatched() {
       queryClient.invalidateQueries({ queryKey: ['continueWatching'] });
       queryClient.invalidateQueries({ queryKey: ['homeData'] });
       queryClient.invalidateQueries({ queryKey: ['watchedHistory'] });
+      queryClient.invalidateQueries({ queryKey: ['watchTimes'] });
     },
   });
 }
@@ -282,7 +272,6 @@ export function useSetListStatus() {
     },
     onSuccess: (_, variables) => {
       queryClient.invalidateQueries({ queryKey: ['watchlist'] });
-      queryClient.invalidateQueries({ queryKey: ['isInWatchlist', variables.anilistId] });
       queryClient.invalidateQueries({ queryKey: ['listStatus', variables.anilistId] });
     },
   });

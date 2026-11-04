@@ -21,7 +21,7 @@
 //! simplest surface mpv's OpenGL render API can draw into. Hardware decoding stays on copy-back
 //! (VideoToolbox decodes, the frame is copied into OpenGL), which needs no interop checks.
 // Apple marks all of OpenGL deprecated; it is still supported, and mpv's render API needs it.
-#![allow(deprecated)]
+#![allow(deprecated, reason = "Apple marks all of OpenGL deprecated; mpv's render API needs it")]
 
 use super::ffi::{self, Handle, Lib, OpenGlFbo, OpenGlInitParams, RenderContext, RenderParam};
 use objc2::rc::Retained;

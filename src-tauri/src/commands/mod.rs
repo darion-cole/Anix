@@ -13,6 +13,7 @@ pub mod local_scanner;
 pub mod mac_updates;
 pub mod mal;
 pub mod notices;
+pub mod party;
 pub mod player;
 pub mod playlists;
 pub mod plugins;

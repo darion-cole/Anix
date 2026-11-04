@@ -675,10 +675,10 @@ async fn notification_preferences_and_filler_cache() {
         cover_image: None,
     };
     db::save_notification_preference(&pool, &pref).await.unwrap();
-    let fetched = db::get_notification_preference(&pool, 404).await.unwrap().unwrap();
-    assert!(fetched.enabled);
-    assert_eq!(fetched.media_title, "Jujutsu Kaisen");
-    assert_eq!(db::list_notification_preferences(&pool).await.unwrap().len(), 1);
+    let listed = db::list_notification_preferences(&pool).await.unwrap();
+    assert_eq!(listed.len(), 1);
+    assert!(listed[0].enabled);
+    assert_eq!((listed[0].media_id, listed[0].media_title.as_str()), (404, "Jujutsu Kaisen"));
 
     db::cache_filler_episodes(&pool, 505, &[10, 11, 12, 13]).await.unwrap();
     let fillers = db::get_cached_filler_episodes(&pool, 505).await.unwrap().unwrap();
@@ -787,9 +787,9 @@ async fn adding_many_playlist_items_is_all_or_nothing() {
 
     assert_eq!(db::add_items_to_custom_playlist(&pool, &[]).await.unwrap(), 0);
 
-    // The single-item entry point reports failures too.
-    assert!(db::add_item_to_custom_playlist(&pool, playlist_item("item-1", &playlist.id, 1.0)).await.is_err());
-    db::add_item_to_custom_playlist(&pool, playlist_item("item-11", &playlist.id, 11.0)).await.unwrap();
+    // A single item reports failures too.
+    assert!(db::add_items_to_custom_playlist(&pool, &[playlist_item("item-1", &playlist.id, 1.0)]).await.is_err());
+    db::add_items_to_custom_playlist(&pool, &[playlist_item("item-11", &playlist.id, 11.0)]).await.unwrap();
 
     let listed = db::list_custom_playlists(&pool).await.unwrap();
     assert_eq!(listed.len(), 1);
@@ -894,7 +894,7 @@ async fn download_status_transitions() {
     let pool = memory_db().await;
     db::create_download(&pool, &download("dl-1", 5.0)).await.unwrap();
 
-    let listed = db::get_downloads(&pool, 303).await.unwrap();
+    let listed = db::get_all_downloads(&pool).await.unwrap();
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].status, "QUEUED");
 
@@ -1098,4 +1098,27 @@ async fn watch_times_keep_the_days_a_rewatch_moves() {
     // Marking by hand counts as watching today, once.
     db::set_episodes_watched(&pool, 202, "Other", None, &[1.0, 2.0], true).await.unwrap();
     assert_eq!(count(&pool, "SELECT COUNT(*) FROM watch_events WHERE anilist_id = 202").await, 2);
+}
+
+/// Going back to an earlier version after an update (Settings › System) opens a database the
+/// newer version already changed. Its migrations only add, so the earlier code must open it
+/// as it is and leave the newer tables and columns alone.
+#[tokio::test]
+async fn a_database_from_a_newer_version_opens_and_keeps_what_it_added() {
+    let tmp = TempDir::new("newer");
+    let pool = db::init_db_at(&tmp.db_path()).await.expect("init");
+    db::update_watch_progress(&pool, &history(21, 1.0, 60_000, 1_440_000, 1_788_549_800_000)).await.unwrap();
+    // What a later version might add: a table of its own and a column on an existing table.
+    sqlx::query("CREATE TABLE watch_party_peers (id TEXT PRIMARY KEY, name TEXT)").execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO watch_party_peers VALUES ('p1', 'host')").execute(&pool).await.unwrap();
+    sqlx::query("ALTER TABLE watch_history ADD COLUMN future_flag INTEGER DEFAULT 7").execute(&pool).await.unwrap();
+    pool.close().await;
+
+    let pool = db::init_db_at(&tmp.db_path()).await.expect("the earlier code opens it");
+    assert_eq!(count(&pool, "SELECT COUNT(*) FROM watch_party_peers").await, 1, "the newer table is kept");
+    assert_eq!(count(&pool, "SELECT COUNT(*) FROM watch_history WHERE future_flag = 7").await, 1, "and the newer column");
+    assert_eq!(db::get_episode_progress(&pool, 21, 1.0).await.unwrap(), Some((60_000, 1_440_000)), "progress is still read");
+    db::update_watch_progress(&pool, &history(21, 2.0, 30_000, 1_440_000, 1_788_549_900_000)).await.expect("and written");
+    assert_eq!(count(&pool, "SELECT COUNT(*) FROM watch_history").await, 2);
+    pool.close().await;
 }

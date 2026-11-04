@@ -1,5 +1,77 @@
 # Changelog
 
+## 1.4.0
+
+### Watch together (beta)
+- Watch party on the local network: one person hosts from the player, others on the same Wi-Fi or LAN join with
+  a short code. The host controls play, pause, seek and episode changes; guests stay in step. Each person needs
+  the episode from their own extensions or files. Nothing goes over the internet, and VPN links are not used.
+- **Beta:** it was tested with two copies of Anix on one computer, but not yet on two real devices, because the
+  developer does not have a second one. Please try it and report what works and what does not (an issue on GitHub
+  or Codeberg); the window says so too.
+
+### Look and feel
+- A livelier interface in every theme: a sliding highlight in the sidebar and tabs, cards that lift and glow in
+  their cover's colour, a quick look that slides up over the poster, a calmer Home banner, and clearer empty,
+  loading and offline screens.
+- Anime pages, the player, Library, Schedule, Downloads, Notifications (now grouped into Today and Earlier) and
+  Settings got the same treatment. Extensions show a health dot from their last test, the player's main buttons
+  have text labels, and the first-run setup is split into three short steps.
+- Meme mode (Settings › Appearance) with three levels: Low, the normal app and the default; Medium, the game-style
+  layer (level and EXP from the episodes you watched, "EPISODE CLEAR!" and "QUEST COMPLETE", a day combo, a power
+  level on scores, dialog-box toasts); High, real anime meme images and meme lines over every screen, one character
+  per spot, with the plain words kept on every important button and in tooltips and screen-reader text, and the
+  series and rights holders credited in Settings › About. The images ship inside the app as one meme pack, so
+  nothing is downloaded. No sounds, and nothing moves over a playing video.
+- Everything respects reduced motion and Fewer effects, and works right to left.
+- The app starts with a smaller file: screens other than Home load the first time you open them.
+
+### Stability
+- Safe mode: after two starts in a row that did not end cleanly, Anix starts with the web player, without
+  graphics acceleration and without reopening the last screen. One clean exit ends it.
+- Going back after an update: an AppImage keeps the version it replaced, and Settings › System can put it back.
+  The website can mark a version as having a serious problem; Anix shows a notice and never installs it.
+- Playback that gets stuck offers another server, and while a stream is being found the player shows which
+  extensions are still being asked.
+- A repository can pause a broken extension; paused extensions are skipped by release checks.
+- An extension update that cannot be saved keeps the installed version.
+- Fullscreen goes through the window instead of WebKit's own fullscreen, which crashed with WebKitGTK 2.50
+  (Ubuntu 22.04 and 24.04). The embedded mpv picture stays visible in fullscreen.
+- Closing the terminal that started Anix closes it cleanly, together with its downloads (an external mpv or VLC
+  window stays open).
+- A full disk shows a clear warning instead of misleading errors.
+
+### Speed
+- Home no longer repaints while nothing changes: idle CPU in front is about half of before, and zero when the
+  window is in the background.
+- New Settings › Appearance › Fewer effects switch: no background glow, blur or animations, for slow machines.
+
+### Accounts
+- AniList and MyAnimeList sign-in use Anix's own app registrations.
+- Browser sign-in (Comick) says how to open the sign-in page again.
+
+### Every distribution
+- Two AppImages: the classic one (Ubuntu 22.04 base, runs on Ubuntu 22.04, Debian 12, Mint 21 and newer) and
+  one for newer systems (Ubuntu 24.04 base, newer WebKitGTK). The in-app updater picks the right one and can
+  move a classic install to the newer build when the system allows it.
+- The update window says how to update DEB, RPM, AUR and Flatpak installs.
+- Flatpak preview. Start at login and alerts while Anix is closed are not available in it yet.
+- NVIDIA hardware decoding (NVDEC) in the embedded player.
+- The first-run language setup no longer opens over the player.
+- In the Flatpak, the buttons that open mpv or VLC are hidden, since the Flatpak cannot start them.
+
+### Fixes
+- The RPM installs on openSUSE too: it accepts openSUSE's names for WebKitGTK and the GStreamer plugins.
+- The Watch order row has its own scroll arrows.
+- Local MP4 files whose index sits at the end of the file play in the embedded player instead of falling back
+  to the web player.
+- Someone on a pre-release version is offered the final release.
+- Downloads never reach addresses on your own network, also through redirects or playlist entries.
+- Restoring a backup keeps the sign-ins it does not contain.
+- A very large episode range in bulk download no longer freezes the app.
+- A player opened in the first seconds after start-up no longer falls back to the web player while embedded mpv
+  is still starting.
+
 ## 1.3.2
 
 ### Video Player & Playback Engine

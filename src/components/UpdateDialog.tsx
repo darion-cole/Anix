@@ -14,6 +14,7 @@ import { shouldPromptUpdate } from '../lib/version';
 import { useOpenExternal } from '../hooks/useOpenExternal';
 import type { UpdateInstallSupport } from '../types';
 import { locale, t } from '../i18n';
+import { Meme, MemeImage } from './meme/Meme';
 
 /** How often a pending update window looks for a moment with no other dialog open. */
 const PROMPT_RETRY_MS = 3000;
@@ -126,7 +127,15 @@ export const UpdateDialog: React.FC = () => {
     <Dialog
       isOpen={updateDialogOpen}
       onClose={close}
-      title={t('updateDialog.title', { version: updateInfo.version })}
+      title={
+        updateInfo.switch_build ? (
+          t('updateDialog.switchTitle', { version: updateInfo.version })
+        ) : installing ? (
+          t('updateDialog.title', { version: updateInfo.version })
+        ) : (
+          <Meme spot="upd" plain={t('updateDialog.title', { version: updateInfo.version })} />
+        )
+      }
       maxWidth="max-w-md"
       footer={
         install.step === 'installed' ? (
@@ -160,16 +169,24 @@ export const UpdateDialog: React.FC = () => {
       }
     >
       <div className="flex flex-col gap-2">
+        {!installing && !updateInfo.switch_build && <MemeImage name="kirei-rejoice" className="meme-dlg-img" />}
         {publishedLabel && <p className="text-xs text-text-muted">{t('updateDialog.released', { date: publishedLabel })}</p>}
         <h3 className="text-[13px] font-medium text-text-primary">{t('updateDialog.releaseNotes')}</h3>
         <div className="max-h-56 overflow-y-auto whitespace-pre-wrap rounded-md ui-card bg-bg-card p-3 text-[13px] leading-relaxed text-text-secondary select-text">
           {updateInfo.changelog || t('updateDialog.noNotes')}
         </div>
+        {updateInfo.switch_build && <p className="text-xs text-text-secondary">{t('updateDialog.switchHint')}</p>}
         {canInstall && install.step === 'idle' && (
           <p className="text-xs text-text-muted">
             {/* The macOS build replaces the app bundle rather than an AppImage. */}
             {/Macintosh|Mac OS X/.test(navigator.userAgent) ? t('updateDialog.installHintMac') : t('updateDialog.installHint')}
           </p>
+        )}
+        {!canInstall && support?.kind === 'package' && (
+          <p className="text-xs text-text-muted">{t('updateDialog.packageHint')}</p>
+        )}
+        {!canInstall && support?.kind === 'flatpak' && (
+          <p className="text-xs text-text-muted">{t('updateDialog.flatpakHint')}</p>
         )}
         {installing && (
           <div aria-live="polite" className="flex flex-col gap-1.5">
@@ -183,10 +200,15 @@ export const UpdateDialog: React.FC = () => {
             >
               <div className="h-full rounded-full bg-accent-500" style={{ width: `${percent ?? 5}%` }} />
             </div>
-            <p className="text-xs text-text-muted">
-              {percent !== null && percent < 100
-                ? t('updateDialog.downloadingPercent', { percent })
-                : t('updateDialog.checkingInstalling')}
+            <p className="flex items-center gap-3 text-xs text-text-muted">
+              <MemeImage name="archer-unlimited-blade-works" className="meme-row-md" />
+              <span>
+                {percent !== null && percent < 100 ? (
+                  <Meme spot="updDl" plain={t('updateDialog.downloadingPercent', { percent })} />
+                ) : (
+                  t('updateDialog.checkingInstalling')
+                )}
+              </span>
             </p>
           </div>
         )}

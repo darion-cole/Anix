@@ -83,7 +83,7 @@ pub fn check_public_url(url: &Url) -> Result<(), String> {
     if !matches!(url.scheme(), "http" | "https") {
         return Err(format!("only http and https URLs can be fetched, not {}:", url.scheme()));
     }
-    if url.host_str().map_or(true, str::is_empty) {
+    if url.host_str().is_none_or(str::is_empty) {
         return Err("the URL has no host".to_string());
     }
     if private_target(url) {
@@ -153,11 +153,15 @@ impl Resolve for PublicResolver {
 /// Follows a redirect only to an `http(s)` URL whose host is not a private address; a host name
 /// there is checked by `PublicResolver` when the hop connects.
 fn public_redirects() -> Policy {
-    Policy::custom(|attempt| {
+    redirects_checked_by(check_public_url)
+}
+
+fn redirects_checked_by(check: fn(&Url) -> Result<(), String>) -> Policy {
+    Policy::custom(move |attempt| {
         if attempt.previous().len() > MAX_REDIRECTS {
             return attempt.error("too many redirects");
         }
-        match check_public_url(attempt.url()) {
+        match check(attempt.url()) {
             Ok(()) => attempt.follow(),
             Err(reason) => attempt.error(reason),
         }
@@ -197,6 +201,16 @@ pub fn public_download_client() -> Result<Client, AppError> {
                 .map_err(build_error)
         })
         .cloned()
+}
+
+/// `public_download_client` whose redirect hops are checked by `check`, for a caller that adds a
+/// test allowance to `check_public_url`. Not cached: the caller keeps the client.
+pub fn guarded_download_client(check: fn(&Url) -> Result<(), String>) -> Result<Client, AppError> {
+    public_builder()
+        .read_timeout(Duration::from_secs(30))
+        .redirect(redirects_checked_by(check))
+        .build()
+        .map_err(build_error)
 }
 
 /// `no_redirect_client` that reaches public hosts only. Callers that follow redirects by hand

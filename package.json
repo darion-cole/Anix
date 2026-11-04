@@ -1,23 +1,23 @@
 {
   "name": "anix",
   "private": true,
-  "version": "1.3.2",
+  "version": "1.4.0",
   "license": "MIT",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc && vite build",
+    "dev": "node scripts/memes-unpack.mjs && vite",
+    "build": "node scripts/memes-unpack.mjs && tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
     "i18n:check": "node --experimental-strip-types scripts/i18n-check.mjs --raw",
-    "i18n:test": "node --experimental-strip-types scripts/i18n-test.mjs && node --experimental-strip-types scripts/player-test.mjs && node --experimental-strip-types scripts/history-test.mjs && node --experimental-strip-types scripts/routes-test.mjs"
+    "i18n:test": "node --experimental-strip-types scripts/i18n-test.mjs && node --experimental-strip-types scripts/player-test.mjs && node --experimental-strip-types scripts/history-test.mjs && node --experimental-strip-types scripts/routes-test.mjs && node --experimental-strip-types scripts/party-test.mjs && node --test scripts/memes-unpack-test.mjs",
+    "floor": "node --test scripts/floor-guard-test.mjs && node scripts/floor-guard.mjs"
   },
   "dependencies": {
     "@fontsource-variable/inter": "^5.3.0",
     "@tanstack/react-query": "^5.66.0",
     "@tauri-apps/api": "^2.2.0",
     "@tauri-apps/plugin-deep-link": "^2.4.10",
-    "@tauri-apps/plugin-shell": "^2.2.0",
     "clsx": "^2.1.1",
     "hls.js": "^1.5.18",
     "lucide-react": "^0.475.0",
@@ -28,7 +28,6 @@
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.2.0",
-    "@types/node": "^22.13.4",
     "@types/react": "^18.3.18",
     "@types/react-dom": "^18.3.5",
     "@vitejs/plugin-react": "^4.3.4",

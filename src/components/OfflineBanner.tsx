@@ -1,9 +1,10 @@
 import React from 'react';
-import { Info, WifiOff } from 'lucide-react';
+import { HardDrive, Info, WifiOff } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useLocation } from 'react-router-dom';
-import { useOfflineStatus } from '../hooks/useSystem';
+import { useDataDiskLow, useOfflineStatus } from '../hooks/useSystem';
 import { locale, t } from '../i18n';
+import { Meme, useHighModule } from './meme/Meme';
 
 function savedTime(savedAt: number): string {
   return new Date(savedAt * 1000).toLocaleString(locale(), { dateStyle: 'medium', timeStyle: 'short' });
@@ -17,20 +18,38 @@ export function showsCatalogue(pathname: string): boolean {
 /**
  * A thin strip under the title bar while saved data is shown because no catalogue can be
  * reached, or a quieter one on catalogue screens while another catalogue stands in for AniList.
+ * A full disk takes its place.
  */
 export const OfflineBanner: React.FC = () => {
   const { offline, saved_at, fallback } = useOfflineStatus();
+  const diskLow = useDataDiskLow();
+  const high = useHighModule();
   const queryClient = useQueryClient();
   const { pathname } = useLocation();
+  // Comes first: with a full disk, extension and watch-progress saves fail and other errors mislead.
+  if (diskLow) {
+    return (
+      <div
+        role="alert"
+        className="ui-banner flex h-7 w-full flex-shrink-0 items-center justify-center gap-2 border-b border-state-error/40 bg-state-error/[0.12] px-3 text-xs font-medium text-text-primary"
+      >
+        <HardDrive aria-hidden="true" className="h-3.5 w-3.5 flex-shrink-0 text-state-error" />
+        <span className="truncate">{t('offlineBanner.diskFull')}</span>
+      </div>
+    );
+  }
   if (!offline && fallback) {
     if (!showsCatalogue(pathname)) return null;
     return (
       <div
         role="status"
-        className="flex h-6 w-full flex-shrink-0 items-center justify-center gap-2 bg-bg-card px-3 text-xs text-text-secondary"
+        data-tone="info"
+        className="ui-banner flex h-6 w-full flex-shrink-0 items-center justify-center gap-2 border-b border-accent-500/40 bg-accent-tint px-3 text-xs font-medium text-text-primary"
       >
-        <Info aria-hidden="true" className="h-3.5 w-3.5" />
-        <span className="truncate">{t('offlineBanner.fallback', { name: fallback })}</span>
+        <Info aria-hidden="true" className="h-3.5 w-3.5 flex-shrink-0 text-accent-300" />
+        <span className="truncate">
+          <Meme spot="fallback" plain={t('offlineBanner.fallback', { name: fallback })} vars={{ name: fallback }} />
+        </span>
       </div>
     );
   }
@@ -38,13 +57,19 @@ export const OfflineBanner: React.FC = () => {
   return (
     <div
       role="status"
-      className="flex h-7 w-full flex-shrink-0 items-center justify-center gap-2 bg-state-warning/15 px-3 text-xs text-state-warning"
+      className="ui-banner flex h-7 w-full flex-shrink-0 items-center justify-center gap-2 border-b border-state-warning/40 bg-state-warning/[0.12] px-3 text-xs font-medium text-text-primary"
     >
-      <WifiOff aria-hidden="true" className="h-3.5 w-3.5" />
+      {high ? <high.MemeTruck /> : <WifiOff aria-hidden="true" className="h-3.5 w-3.5 flex-shrink-0 text-state-warning" />}
       <span className="truncate">
-        {saved_at
-          ? t('offlineBanner.savedFrom', { time: savedTime(saved_at) })
-          : t('offlineBanner.unreachable')}
+        {saved_at ? (
+          <Meme
+            spot="offline"
+            plain={t('offlineBanner.savedFrom', { time: savedTime(saved_at) })}
+            medium={t('fun.offlineSaved', { time: savedTime(saved_at) })}
+          />
+        ) : (
+          <Meme spot="offline" plain={t('offlineBanner.unreachable')} medium={t('fun.offlineUnreachable')} />
+        )}
       </span>
       <button
         type="button"

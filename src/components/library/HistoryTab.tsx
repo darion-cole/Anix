@@ -1,11 +1,11 @@
 import React from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Compass, History } from 'lucide-react';
+import { Compass, History, Play } from 'lucide-react';
 import type { UseQueryResult } from '@tanstack/react-query';
 import { Button, EmptyState, ErrorState, Spinner } from '../ui';
 import type { HistoryEntry } from '../../types';
 import { isHistoryEntryFinished, watchPath } from '../../hooks/watchProgress';
-import { usePlayful } from '../../hooks/useSettings';
+import { useMemeLevel, usePlayful } from '../../hooks/useSettings';
 import { categoryLabel, episodeLabel, watchedPercent } from './format';
 import { CoverThumb } from './CoverThumb';
 import { ShowMore } from './PosterGrid';
@@ -18,6 +18,7 @@ interface HistoryTabProps {
 
 export const HistoryTab: React.FC<HistoryTabProps> = ({ query }) => {
   const playful = usePlayful();
+  const high = useMemeLevel() === 'high';
   const navigate = useNavigate();
   const history = query.data ?? [];
   // The whole history can be long; render it in steps like the other Library lists.
@@ -44,7 +45,8 @@ export const HistoryTab: React.FC<HistoryTabProps> = ({ query }) => {
     return (
       <EmptyState
         icon={<History className="w-8 h-8" aria-hidden="true" />}
-        title={playful ? t('historyTab.emptyPlayful') : t('historyTab.empty')}
+        title={playful && !high ? t('historyTab.emptyPlayful') : t('historyTab.empty')}
+        meme="histEmpty"
         description={
           playful
             ? t('historyTab.emptyHintPlayful')
@@ -64,7 +66,7 @@ export const HistoryTab: React.FC<HistoryTabProps> = ({ query }) => {
 
   return (
     <>
-      <ul className="grid grid-cols-[repeat(auto-fill,minmax(220px,1fr))] gap-4">
+      <ul className="flex flex-col gap-1">
         {list.visible.map((entry) => {
           const percent = watchedPercent(entry.position_ms, entry.duration_ms);
           const episode = `${episodeLabel(entry.episode_number)} · ${categoryLabel(entry.category)}`;
@@ -74,8 +76,9 @@ export const HistoryTab: React.FC<HistoryTabProps> = ({ query }) => {
           return (
             <li
               key={`${entry.anilist_id}-${entry.episode_number}`}
-              className="[content-visibility:auto] [contain-intrinsic-size:auto_190px]"
+              className="[content-visibility:auto] [contain-intrinsic-size:auto_80px]"
             >
+              {/* One link per row; the Continue pill is only its visible cue. */}
               <Link
                 to={
                   finished
@@ -87,28 +90,29 @@ export const HistoryTab: React.FC<HistoryTabProps> = ({ query }) => {
                     ? t('historyTab.finishedLabel', { title: entry.title, episode })
                     : t('historyTab.continueLabel', { title: entry.title, episode })
                 }
-                className="flex flex-col gap-2 p-2 rounded-lg ui-card bg-bg-card hover:bg-bg-elevated transition-colors focus-visible:-outline-offset-2"
+                className="group flex items-center gap-3 rounded-lg p-2 transition-colors hover:bg-ink/5 focus-visible:-outline-offset-2"
               >
-                <div className="relative w-full aspect-video rounded-md overflow-hidden bg-bg-elevated">
-                  <CoverThumb src={entry.cover} className="w-full h-full" />
-                  {percent !== null && (
-                    <div className="absolute bottom-0 start-0 end-0 h-1 bg-white/20">
-                      <div className="h-full bg-accent-500" style={{ width: `${percent}%` }} />
-                    </div>
-                  )}
-                </div>
-
-                <div className="flex flex-col gap-0.5 px-1 pb-1 min-w-0">
-                  <span className="text-[13px] font-medium text-text-primary truncate" title={entry.title}>
+                <CoverThumb src={entry.cover} className="aspect-[2/3] w-12 flex-shrink-0 rounded-md" />
+                <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                  <span className="truncate text-[13px] font-medium text-text-primary" title={entry.title}>
                     {entry.title}
                   </span>
-                  <span className="flex items-center justify-between gap-2 text-xs text-text-muted">
-                    <span className="truncate">{episode}</span>
-                    {percent !== null && (
-                      <span className="flex-shrink-0 tabular-nums">{t('historyTab.watchedPercent', { percent })}</span>
-                    )}
+                  <span className="truncate text-xs text-text-muted">
+                    {percent !== null ? `${episode} · ${t('historyTab.watchedPercent', { percent })}` : episode}
                   </span>
-                </div>
+                  {percent !== null && (
+                    <span aria-hidden="true" className="mt-1 h-1 w-full max-w-72 overflow-hidden rounded-full bg-ink/10">
+                      <span className="block h-full rounded-full bg-accent-500" style={{ width: `${percent}%` }} />
+                    </span>
+                  )}
+                </span>
+                <span
+                  aria-hidden="true"
+                  className="inline-flex h-8 flex-shrink-0 items-center gap-1.5 rounded-md bg-accent-600 px-3 text-[13px] font-medium text-on-accent transition-colors group-hover:bg-accent-700"
+                >
+                  <Play className="h-3.5 w-3.5 fill-current" />
+                  {t('historyTab.continue')}
+                </span>
               </Link>
             </li>
           );

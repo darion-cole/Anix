@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { Captions, Download, ExternalLink, LoaderCircle } from 'lucide-react';
+import { Captions, Download, ExternalLink, LoaderCircle, RefreshCw, Users } from 'lucide-react';
 import { formatTime, sameEpisode } from './format';
 import { IconButton } from './IconButton';
 import { MiniPlayerChrome } from './MiniPlayerChrome';
@@ -11,7 +11,17 @@ import { AUDIO_MODES, PlayerControls } from './PlayerControls';
 import type { EpisodeStep } from './PlayerControls';
 import { PlayerSettingsPanel } from './PlayerSettingsPanel';
 import { PauseDetails, PlayerClock } from './PlayerTopBar';
-import { countdownLabel, HOLD_RATE, mpvSubtitlePositions, objectFitClass, PAUSE_DETAILS_MS, stepSpeed } from './playerLogic';
+import {
+  countdownLabel,
+  HOLD_RATE,
+  mpvSubtitlePositions,
+  objectFitClass,
+  PAUSE_DETAILS_MS,
+  SKIP_COUNTDOWN_SECONDS,
+  stepSpeed,
+} from './playerLogic';
+import { watchStall } from '../../lib/stall';
+import type { StallWatch } from '../../lib/stall';
 import { SecondarySubtitle } from './SecondarySubtitle';
 import type { FeedbackMessage } from './PlayerFeedback';
 import type { PlayerMenuOption } from './PlayerSettingsPanel';
@@ -19,12 +29,12 @@ import { PlayerStatus } from './PlayerStatus';
 import type { PlayerStatusAction } from './PlayerStatus';
 import { PlayerTopBar } from './PlayerTopBar';
 import { SubtitleSettingsModal } from '../SubtitleSettingsModal';
+import { WatchPartyDialog } from '../party/WatchPartyDialog';
 import { errorMessage } from '../ui/ErrorState';
 import { useAutoHide } from '../../hooks/useAutoHide';
 import { useDialogueBoost } from '../../hooks/useDialogueBoost';
 import { sendMpv, useMpvEngine } from '../../hooks/useEmbeddedMpv';
 import { useLanguagePrefs } from '../../hooks/useLanguagePrefs';
-import { exitFullscreen } from '../../hooks/useFullscreen';
 import { useResumePosition } from '../../hooks/useLibrary';
 import { useMediaState } from '../../hooks/useMediaState';
 import { supportsPictureInPicture, useMiniPlayer } from '../../hooks/useMiniPlayer';
@@ -33,13 +43,16 @@ import { usePlayerEngine } from '../../hooks/usePlayerEngine';
 import type { PlayerEngine, QualityLevel } from '../../hooks/usePlayerEngine';
 import { usePlayerShortcuts } from '../../hooks/usePlayerShortcuts';
 import { useSkipTimes } from '../../hooks/useProviders';
-import { useSettings } from '../../hooks/useSettings';
+import { useFunMode, useMemeLevel, useSettings } from '../../hooks/useSettings';
+import { Meme, useHighModule } from '../meme/Meme';
 import { useStoredChoice } from '../../hooks/useStoredChoice';
 import { useSubtitleDrop } from '../../hooks/useSubtitleDrop';
+import { useDesktopStatus } from '../../hooks/useSystem';
 import { hasSkipTimes, useSkipSegments } from '../../hooks/useSkipSegments';
 import type { AutoSkip } from '../../hooks/useSkipSegments';
 import { SUBTITLES_OFF, useSubtitleTracks } from '../../hooks/useSubtitleTracks';
 import { useWatchProgress } from '../../hooks/useWatchProgress';
+import { useWatchParty } from '../../hooks/useWatchParty';
 import { usePlayerStore } from '../../stores/playerStore';
 import { t } from '../../i18n';
 import type { SourcesResult } from '../../types';
@@ -108,6 +121,12 @@ interface ExternalPlayerProgress {
   ended: boolean;
   running: boolean;
 }
+
+/** A watch party guest follows the host's position, so it skips nothing by itself. */
+const NO_AUTO_SKIP: AutoSkip = { intro: false, outro: false };
+
+/** The bars and the cursor hide after this long without mouse or keyboard activity. */
+const CHROME_IDLE_MS = 2500;
 
 /** Saved positions this close to the end, or to the start, are not resumed. */
 const RESUME_END_FRACTION = 0.95;
@@ -229,6 +248,35 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   const engine: PlayerEngine = isMpv ? mpvEngine : webEngine;
   const media = useMediaState(videoRef);
 
+  // Watch together: a guest follows the host, so its play, pause, seek, speed and episode
+  // steps are the host's; volume, subtitles and quality stay its own.
+  const party = useWatchParty(
+    videoRef,
+    {
+      anilistId,
+      episodeNumber,
+      category,
+      language: sources.language ?? null,
+      extension: provider === 'local' || provider === 'auto' ? null : provider,
+      server: providerName,
+      duration: media.duration,
+    },
+    { play: engine.play, pause: engine.pause, wantsPlay: engine.wantsPlay },
+    (reason) => notify({ text: t(reason === 'host_left' ? 'party.endedByHost' : 'party.connectionLost'), tone: 'error' })
+  );
+  const guest = party.isGuest;
+  const hostControls = useCallback(() => notify({ text: t('party.hostControls') }), [notify]);
+  const [partyOpen, setPartyOpen] = useState(false);
+  /** The handler, or for a guest the note that the host controls this. */
+  const hostOnly = <A extends unknown[]>(handler: (...args: A) => void): ((...args: A) => void) =>
+    guest ? hostControls : handler;
+  const inParty = party.status.role !== 'none';
+  const partyChip = party.isHost
+    ? party.status.waiting
+      ? t('party.chipWaiting')
+      : t('party.chipHost', { count: party.status.guests })
+    : t('party.chipGuest');
+
   const subtitleFontSize = usePlayerStore((s) => s.subtitleFontSize);
   const subtitleRaise = usePlayerStore((s) => s.subtitleRaise);
   const subtitleColor = usePlayerStore((s) => s.subtitleColor);
@@ -301,7 +349,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   const aniSkip = useSkipTimes(malId, episodeNumber, episodeLength, aniSkipPossible);
   // The fixed jump is only offered once it is clear that no skip times will come.
   const skipLookupDone = !aniSkipPossible || aniSkip.isFetched;
-  const skip = useSkipSegments(videoRef, providerSkip ?? aniSkip.data, autoSkip, skipLookupDone, (kind) =>
+  const skip = useSkipSegments(videoRef, providerSkip ?? aniSkip.data, guest ? NO_AUTO_SKIP : autoSkip, skipLookupDone, (kind) =>
     notify({ text: kind === 'intro' ? t('videoPlayer.skippedIntro') : t('videoPlayer.skippedEnding') })
   );
 
@@ -317,11 +365,11 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
 
   const [subtitleSettingsOpen, setSubtitleSettingsOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const panelOpen = subtitleSettingsOpen || settingsOpen || overlayOpen;
-  const chrome = useAutoHide((media.playing || engine.rebuffering) && engine.phase === 'ready' && !panelOpen);
+  const panelOpen = subtitleSettingsOpen || settingsOpen || partyOpen || overlayOpen;
+  const chrome = useAutoHide((media.playing || engine.rebuffering) && engine.phase === 'ready' && !panelOpen, CHROME_IDLE_MS);
 
   const onEndedRef = useRef(onEnded);
-  onEndedRef.current = onEnded;
+  onEndedRef.current = guest ? () => {} : onEnded;
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
@@ -595,19 +643,19 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       canPrevious: previous !== null,
     },
     {
-      play: engine.play,
-      pause: engine.pause,
-      togglePlay: engine.togglePlay,
-      next: () => next?.onClick(),
-      previous: () => previous?.onClick(),
-      seekTo: (time) => {
+      play: hostOnly(engine.play),
+      pause: hostOnly(engine.pause),
+      togglePlay: hostOnly(engine.togglePlay),
+      next: hostOnly(() => next?.onClick()),
+      previous: hostOnly(() => previous?.onClick()),
+      seekTo: hostOnly((time: number) => {
         const video = videoRef.current;
         if (!video) return;
         const end = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : time;
         seekTo(Math.min(end, time));
-      },
+      }),
       setVolume,
-      setRate,
+      setRate: hostOnly(setRate),
     }
   );
 
@@ -621,24 +669,24 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   }, [notify]);
 
   usePlayerShortcuts({
-    speedBy,
-    holdStart,
+    speedBy: hostOnly(speedBy),
+    holdStart: hostOnly(holdStart),
     holdEnd,
     confirmSkip: () => {
+      if (guest) return false;
       if (skip.countdown === null) return false;
       skip.skipActive();
       return true;
     },
     cancelSkip: skip.cancelCountdown,
-    togglePlay: engine.togglePlay,
-    seekBy,
+    togglePlay: hostOnly(engine.togglePlay),
+    seekBy: hostOnly(seekBy),
     volumeBy,
     toggleMute,
     toggleFullscreen: onToggleFullscreen,
-    exitFullscreen,
-    nextEpisode: () => next?.onClick(),
-    previousEpisode: () => previous?.onClick(),
-    skipSegment: skip.active ? skip.skipActive : skip.skipFallback,
+    nextEpisode: hostOnly(() => next?.onClick()),
+    previousEpisode: hostOnly(() => previous?.onClick()),
+    skipSegment: hostOnly(skip.active ? skip.skipActive : skip.skipFallback),
     toggleMiniPlayer: miniPlayer.toggle,
   });
 
@@ -709,8 +757,14 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     [engine.levels, engine.activeLevel]
   );
 
+  const fun = useFunMode();
+  // Retry keeps plain words on High, where the picture is the meme.
+  const medium = useMemeLevel() === 'medium';
+  const high = useHighModule();
+  // The Flatpak cannot start mpv or VLC on the host.
+  const flatpak = useDesktopStatus().data?.flatpak === true;
   const errorActions: PlayerStatusAction[] = [
-    { label: t('common.retry'), onClick: onReload, primary: true },
+    { label: t(medium ? 'fun.retry' : 'common.retry'), onClick: onReload, primary: true },
     { label: t('videoPlayer.changeServer'), onClick: onOpenServers },
     ...(onTryOtherServers ? [{ label: t('videoPlayer.tryOtherServers'), onClick: onTryOtherServers }] : []),
     ...(extraErrorActions ?? []),
@@ -740,25 +794,84 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     return () => window.clearTimeout(timer);
   }, [pausedNow]);
 
+  // Playback that should be moving but is not gets one offer per load to change server or,
+  // in embedded mpv, to use the web player; a stalled stream otherwise just spins forever.
+  const [stuck, setStuck] = useState(false);
+  const stallOffered = useRef<string | null>(null);
+  const loadId = `${episodeNumber}:${loadKey}`;
+  const wantsPlay = engine.wantsPlay;
+  const enginePhase = engine.phase;
+  const holdingNow = useRef(false);
+  holdingNow.current = engine.rebuffering;
+  useEffect(() => {
+    setStuck(false);
+    if (openExternally || enginePhase === 'error' || stallOffered.current === loadId) return;
+    let watch: StallWatch | null = null;
+    const timer = window.setInterval(() => {
+      const video = videoRef.current;
+      if (!video || stallOffered.current === loadId) return;
+      const next = watchStall(watch, {
+        now: Date.now(),
+        time: video.currentTime,
+        phase: enginePhase,
+        wantsPlay: wantsPlay(),
+        paused: video.paused,
+        rebuffering: holdingNow.current,
+      });
+      watch = next.watch;
+      // Keeps watching: a stall that clears itself must not use up the offer for a later one.
+      if (next.stuck) setStuck(true);
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [loadId, enginePhase, openExternally, wantsPlay]);
+  // Only the user's answer to the bar spends this load's offer.
+  const spendStallOffer = () => {
+    stallOffered.current = loadId;
+    setStuck(false);
+  };
+  // Moving again (or paused by the user) takes the offer away.
+  useEffect(() => {
+    if (!stuck) return;
+    const video = videoRef.current;
+    if (!video) return;
+    const startedAt = video.currentTime;
+    const onTime = () => {
+      if (Math.abs(video.currentTime - startedAt) > 1) setStuck(false);
+    };
+    const onPause = () => {
+      if (!wantsPlay()) setStuck(false);
+    };
+    video.addEventListener('timeupdate', onTime);
+    video.addEventListener('pause', onPause);
+    return () => {
+      video.removeEventListener('timeupdate', onTime);
+      video.removeEventListener('pause', onPause);
+    };
+  }, [stuck, wantsPlay]);
+
   return (
     <div
       ref={rootRef}
       // Time, seek bar and the left/right seek zones read left to right in every language.
       dir="ltr"
-      className={`absolute inset-0 select-none ${chrome.visible ? '' : 'cursor-none'}`}
+      // Entering the mini-player, the web player shrinks in with a small spring (player.css). Not
+      // with embedded mpv: it draws the picture under the page, which a page transform cannot move.
+      className={`absolute inset-0 select-none ${chrome.visible ? '' : 'cursor-none'} ${
+        miniPlayer.mini && !isMpv ? 'player-shrink-in' : ''
+      }`}
       onMouseMove={chrome.poke}
       onKeyDownCapture={chrome.poke}
       onFocusCapture={chrome.poke}
     >
       {isMpv ? (
         // mpv draws under the page here; this region stays see-through.
-        <div ref={regionRef} aria-hidden="true" className="absolute inset-0" onClick={engine.togglePlay} />
+        <div ref={regionRef} aria-hidden="true" className="absolute inset-0" onClick={hostOnly(engine.togglePlay)} />
       ) : (
         <video
           ref={videoRef}
           crossOrigin="anonymous"
           playsInline
-          onClick={engine.togglePlay}
+          onClick={hostOnly(engine.togglePlay)}
           className={`anilili-video h-full w-full bg-black ${objectFitClass(screenFit)} ${
             chrome.visible ? 'anilili-chrome-visible' : ''
           }`}
@@ -814,22 +927,76 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         <PlayerStatus
           scrim
           kind="error"
-          title={providerName ? t('videoPlayer.playbackFailedOn', { provider: providerName }) : t('videoPlayer.playbackFailed')}
+          title={
+            providerName
+              ? t('videoPlayer.playbackFailedOn', { provider: providerName })
+              : t('videoPlayer.playbackFailed')
+          }
+          medium={providerName ? t('fun.streamFledOn', { provider: providerName }) : t('fun.streamFled')}
+          nani
           detail={engine.error}
           actions={errorActions}
         />
       ) : loading ? (
-        <PlayerStatus kind="loading" title={t('videoPlayer.loadingStream')} />
+        <PlayerStatus kind="loading" title={t('videoPlayer.loadingStream')} medium={t('fun.chargingBeam')} />
       ) : (
         (media.buffering || engine.rebuffering) && (
           <div role="status" className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center">
             <LoaderCircle aria-hidden="true" className="h-10 w-10 animate-spin text-white" />
-            <span className="sr-only">{t('videoPlayer.buffering')}</span>
+            {high ? (
+              // High: the words show under the spinner (static, so nothing moves but the spinner).
+              <span className="meme-buffering absolute top-1/2 mt-9 text-[13px] font-semibold text-white">
+                <Meme spot="buffering" plain={t('videoPlayer.buffering')} />
+              </span>
+            ) : (
+              <span className="sr-only">{t('videoPlayer.buffering')}</span>
+            )}
           </div>
         )
       )}
 
-      {skip.active && !failed && !miniPlayer.mini && (
+      {stuck && !failed && !miniPlayer.mini && (
+        <div
+          role="status"
+          // The player root is ltr for its controls; this sentence and its buttons follow the UI language.
+          dir={document.documentElement.dir || 'ltr'}
+          // A pill that drops in from the top (player.css), once, when playback gets stuck.
+          className="player-drop absolute left-1/2 top-16 z-20 flex max-w-[calc(100%-2rem)] flex-wrap items-center justify-center gap-2 rounded-full border border-white/20 bg-black/90 py-1.5 pe-1.5 ps-4 text-[13px] text-white shadow-pop"
+        >
+          <span>{t('videoPlayer.stuckTitle')}</span>
+          <button
+            type="button"
+            onClick={() => {
+              spendStallOffer();
+              (onTryOtherServers ?? onOpenServers)();
+            }}
+            className="h-8 rounded-full bg-accent-600 px-3.5 font-semibold text-on-accent cursor-pointer transition-colors hover:bg-accent-500"
+          >
+            {onTryOtherServers ? <Meme spot="retry" plain={t('videoPlayer.tryOtherServers')} /> : t('videoPlayer.changeServer')}
+          </button>
+          {isMpv && (
+            <button
+              type="button"
+              onClick={() => {
+                spendStallOffer();
+                onEngineFail(t('videoPlayer.stuckReason'));
+              }}
+              className="h-8 rounded-full bg-white/15 px-3.5 font-medium cursor-pointer transition-colors hover:bg-white/25"
+            >
+              {t('videoPlayer.useWebPlayer')}
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={spendStallOffer}
+            className="h-8 rounded-full px-3 text-white/80 cursor-pointer transition-colors hover:bg-white/15 hover:text-white"
+          >
+            {t('common.close')}
+          </button>
+        </div>
+      )}
+
+      {skip.active && !failed && !miniPlayer.mini && !guest && (
         <div className="absolute bottom-28 right-6 z-20 flex items-center gap-1">
           <button
             type="button"
@@ -842,13 +1009,27 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
                   ? t('videoPlayer.skipIntroWithKey')
                   : t('videoPlayer.skipEndingWithKey')
             }
-            className="h-9 rounded-md border border-white/20 bg-black/70 px-4 text-[13px] font-medium tabular-nums text-white cursor-pointer transition-colors hover:bg-black/90"
+            className="relative isolate h-10 overflow-hidden rounded-md border border-white/50 bg-black/70 px-4 text-[13px] font-semibold tabular-nums text-white cursor-pointer transition-colors hover:bg-black/90"
           >
-            {skip.countdown !== null
-              ? t(skip.active.kind === 'intro' ? 'videoPlayer.skipIntroIn' : 'videoPlayer.skipEndingIn', {
+            {skip.countdown !== null && (
+              // Fills a third more at each of 3, 2, 1, in steps with no transition: nothing glides over the video.
+              <span
+                aria-hidden="true"
+                className="absolute inset-y-0 left-0 -z-10 bg-accent-500/40"
+                style={{ width: `${((SKIP_COUNTDOWN_SECONDS + 1 - countdownLabel(skip.countdown)) / SKIP_COUNTDOWN_SECONDS) * 100}%` }}
+              />
+            )}
+            {skip.countdown !== null ? (
+              <Meme
+                spot="skipBtn"
+                plain={t(skip.active.kind === 'intro' ? 'videoPlayer.skipIntroIn' : 'videoPlayer.skipEndingIn', {
                   seconds: countdownLabel(skip.countdown),
-                })
-              : t(skip.active.kind === 'intro' ? 'videoPlayer.skipIntro' : 'videoPlayer.skipEnding')}
+                })}
+                vars={{ n: countdownLabel(skip.countdown) }}
+              />
+            ) : (
+              t(skip.active.kind === 'intro' ? 'videoPlayer.skipIntro' : 'videoPlayer.skipEnding')
+            )}
           </button>
           {skip.countdown !== null && (
             <button
@@ -856,7 +1037,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
               onClick={skip.cancelCountdown}
               onMouseDown={(e) => e.preventDefault()}
               title={t('videoPlayer.keepWatchingWithKey')}
-              className="h-9 rounded-md border border-white/20 bg-black/70 px-3 text-[13px] text-white cursor-pointer transition-colors hover:bg-black/90"
+              className="h-10 rounded-md border border-white/20 bg-black/70 px-3 text-[13px] text-white cursor-pointer transition-colors hover:bg-black/90"
             >
               {t('common.cancel')}
             </button>
@@ -868,7 +1049,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
           ? t(skip.active.kind === 'intro' ? 'videoPlayer.skippingIntroAnnounce' : 'videoPlayer.skippingEndingAnnounce')
           : ''}
       </span>
-      {!skip.active && skip.fallbackShown && !failed && !miniPlayer.mini && (
+      {!skip.active && skip.fallbackShown && !failed && !miniPlayer.mini && !guest && (
         <button
           type="button"
           onClick={skip.skipFallback}
@@ -881,7 +1062,15 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       )}
 
       {pausedLong && !panelOpen && !miniPlayer.mini && (
-        <PauseDetails title={animeTitle} episode={episodeNumber} episodeTitle={episodeTitle} meta={metaLine} />
+        <PauseDetails
+          title={animeTitle}
+          episode={episodeNumber}
+          episodeTitle={episodeTitle}
+          meta={metaLine}
+          // Read when the pause screen appears, which an `ended` pause leads to.
+          cleared={fun && videoRef.current?.ended === true}
+          continued={fun && videoRef.current?.ended === true && next !== null}
+        />
       )}
 
       {miniPlayer.mini ? (
@@ -891,15 +1080,32 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
           title={t('videoPlayer.titleWithEpisode', { title: animeTitle, number: episodeNumber })}
           playing={media.playing || engine.rebuffering}
           duration={media.duration}
-          onTogglePlay={engine.togglePlay}
-          onSeek={seekTo}
-          next={next}
+          onTogglePlay={hostOnly(engine.togglePlay)}
+          onSeek={hostOnly(seekTo)}
+          next={guest ? null : next}
           onExit={miniPlayer.exit}
         />
       ) : (
         <>
           <PlayerTopBar title={animeTitle} meta={metaLine} onBack={onBack} visible={chrome.visible}>
             <PlayerClock videoRef={videoRef} />
+            {!openExternally && (
+              <IconButton
+                label={inParty ? partyChip : t('party.title')}
+                title={inParty ? partyChip : t('party.hint')}
+                active={inParty}
+                onClick={() => setPartyOpen(true)}
+                className="gap-1.5"
+              >
+                <Users aria-hidden="true" className="h-4 w-4" />
+                {inParty && <span aria-hidden="true">{partyChip}</span>}
+              </IconButton>
+            )}
+            {guest && (
+              <IconButton label={t('party.catchUp')} onClick={party.catchUp}>
+                <RefreshCw aria-hidden="true" className="h-4 w-4" />
+              </IconButton>
+            )}
             <IconButton
               label={t('videoPlayer.download')}
               title={
@@ -912,13 +1118,15 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
             >
               <Download aria-hidden="true" className="h-4 w-4" />
             </IconButton>
-            <IconButton
-              label={t('videoPlayer.openIn', { player: externalPlayer === 'vlc' ? 'VLC' : 'mpv' })}
-              disabled={!hasStream}
-              onClick={handleOpenExternal}
-            >
-              <ExternalLink aria-hidden="true" className="h-4 w-4" />
-            </IconButton>
+            {!flatpak && (
+              <IconButton
+                label={t('videoPlayer.openIn', { player: externalPlayer === 'vlc' ? 'VLC' : 'mpv' })}
+                disabled={!hasStream || inParty}
+                onClick={handleOpenExternal}
+              >
+                <ExternalLink aria-hidden="true" className="h-4 w-4" />
+              </IconButton>
+            )}
           </PlayerTopBar>
 
           <PlayerControls
@@ -926,18 +1134,19 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
             visible={chrome.visible}
             playing={media.playing || engine.rebuffering}
             duration={media.duration}
-            onTogglePlay={engine.togglePlay}
-            onSeek={seekTo}
-            onSeekBy={seekBy}
-            previous={previous}
-            next={next}
+            onTogglePlay={hostOnly(engine.togglePlay)}
+            onSeek={hostOnly(seekTo)}
+            onSeekBy={hostOnly(seekBy)}
+            previous={guest ? null : previous}
+            next={guest ? null : next}
+            locked={guest}
             volume={media.volume}
             muted={media.muted}
             onVolumeChange={setVolume}
             onToggleMute={toggleMute}
             subtitlesOn={subtitles.selectedId !== SUBTITLES_OFF}
             onOpenSubtitles={() => setSubtitleSettingsOpen(true)}
-            onOpenEpisodes={onOpenEpisodes}
+            onOpenEpisodes={hostOnly(onOpenEpisodes)}
             queuedCount={queuedCount}
             onOpenServers={onOpenServers}
             onOpenSettings={() => setSettingsOpen(true)}
@@ -962,9 +1171,21 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         selectedAudioTrackId={engine.audioTrack}
         onSelectAudioTrack={engine.selectAudioTrack}
         category={category}
-        onToggleCategory={onToggleCategory}
+        onToggleCategory={hostOnly(onToggleCategory)}
         container={container}
         engine={engineKind}
+      />
+
+      <WatchPartyDialog
+        isOpen={partyOpen}
+        onClose={() => setPartyOpen(false)}
+        container={container}
+        party={party}
+        anilistId={anilistId}
+        episodeNumber={episodeNumber}
+        category={category}
+        provider={provider}
+        duration={media.duration}
       />
 
       <PlayerSettingsPanel
@@ -973,7 +1194,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         container={container}
         engine={engineKind}
         rate={media.rate}
-        onRateChange={setRate}
+        onRateChange={hostOnly(setRate)}
         qualityOptions={qualityOptions}
         quality={String(engine.selectedLevel)}
         onQualityChange={(value) => engine.selectLevel(Number(value))}

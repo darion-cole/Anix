@@ -92,8 +92,21 @@ html.mpv-video .ui-app,
 html.mpv-video ::backdrop {
   background: transparent !important;
 }
-html.mpv-video .ui-app > :first-child {
+/* By class, not :first-child: in fullscreen the title bar is gone and the content would be painted over the video. */
+html.mpv-video .ui-app > .ui-titlebar {
   background-color: rgb(var(--bg-page));
+}
+
+/* Player fullscreen (hooks/useFullscreen.ts): the window is fullscreen, the player covers it and
+   nothing else is painted, as in browser fullscreen. */
+.app-fullscreen {
+  position: fixed !important;
+  inset: 0;
+  z-index: 1000;
+  visibility: visible;
+}
+html.player-fullscreen body *:not(.app-fullscreen, .app-fullscreen *) {
+  visibility: hidden;
 }
 
 /* Custom Scrollbars */
@@ -149,13 +162,13 @@ h1[tabindex="-1"]:focus-visible {
   color: var(--selection-text);
 }
 
-/* Shimmer Animation */
+/* Shimmer Animation: a sweep in the theme's accent over a faint ink base. */
 .shimmer-placeholder {
   background: linear-gradient(
     90deg,
-    rgb(var(--ink) / 0.04) 0%,
-    rgb(var(--ink) / 0.09) 50%,
-    rgb(var(--ink) / 0.04) 100%
+    rgb(var(--ink) / 0.05) 0%,
+    rgb(var(--accent-500) / 0.14) 50%,
+    rgb(var(--ink) / 0.05) 100%
   );
   background-size: 200% 100%;
   animation: shimmer 1.5s infinite linear;
@@ -199,6 +212,25 @@ option:checked, option:hover {
 /* Letter spacing breaks the joins of Arabic script. */
 :root[dir="rtl"] :is(.tracking-wide, .tracking-wider, .tracking-widest) {
   letter-spacing: 0;
+}
+
+/* Settings › Appearance › Fewer effects (themes.ts applyLook): no glow, no frosted blur, and motion
+   as with reduced motion, for weak graphics and older WebKit. */
+:root[data-effects="fewer"] .ui-ambient {
+  display: none;
+}
+:root[data-effects="fewer"] .ui-frost {
+  background-color: rgb(var(--bg-page));
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+:root[data-effects="fewer"] *,
+:root[data-effects="fewer"] *::before,
+:root[data-effects="fewer"] *::after {
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
+  scroll-behavior: auto !important;
 }
 
 /* Respect the OS "reduce motion" setting */

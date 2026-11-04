@@ -18,7 +18,7 @@ Streaming sources are not built in. They come from **extensions**: JavaScript fi
 from extension repositories (see [Extensions](#extensions)). The extensions live in a separate
 repository (`../plugins`, which has its own `AGENTS.md`).
 
-- Version 1.3.2, identifier `io.anix.app`, licence MIT.
+- Version 1.4.0, identifier `io.anix.app`, licence MIT.
 - Public site: https://anix-linux.vercel.app (download page, extension list, `version.json` for update checks).
 - The app was first called **Anilili**. Old names still work and must keep working: `ANILILI_*`
   env vars, the `$anilili` plugin global, `anilili://` links, and old data folders (migrated by
@@ -63,6 +63,7 @@ React/TS UI (src/)  ──invoke()──▶  Tauri 2 commands (src-tauri/src/com
 | `src-tauri/src/providers/` | `AnimeProvider` trait, racing/budgets/stream checks, title matching, sub/dub languages |
 | `src-tauri/src/embedded_mpv/` | libmpv player (`ffi` dlopen, GTK GL layer, `policy`, `selftest`) |
 | `src-tauri/src/stream_proxy.rs` | Loopback media proxy |
+| `src-tauri/src/party/` | LAN watch party: `lan.rs` (LAN interfaces only, mDNS `_anix-party._tcp`, port 47830), `secure.rs` (SPAKE2 join code, ChaCha20-Poly1305 frames), `protocol.rs` (strict messages, no URLs or paths), `session.rs` (host/guest, join lock, rate limits), `sync.rs` (clock offset). UI: `src/hooks/useWatchParty.ts`, `src/lib/watchParty.ts`, `src/components/party/` |
 | `src-tauri/src/web_session.rs` | In-app webview sessions for the user's site verification |
 | `src-tauri/src/db.rs` | Schema and migrations; app and config folders |
 | `src-tauri/src/error.rs` | `AppError` and stable error codes (mirrored in `src/lib/errorCodes.ts`) |
@@ -70,7 +71,7 @@ React/TS UI (src/)  ──invoke()──▶  Tauri 2 commands (src-tauri/src/com
 | `src-tauri/tests/` | Integration tests, `*_support/` helpers, `fixtures/` |
 | `src-tauri/examples/plugin_run.rs` | CLI to run one extension in the real runtime |
 | `src-tauri/resources/` | Anime4K shaders, hardware-decoding self-test clip |
-| `scripts/` | `build-appimage.sh`, `build-libmpv-lgpl.sh`, `i18n-check.mjs`, `i18n-test.mjs`, `player-test.mjs` (embedded mpv stand-in), `history-test.mjs` (when a visit counts as watch history) and `routes-test.mjs` (accepted anime ids, deep links and episode numbers; anime-page scores), all run by `i18n:test` |
+| `scripts/` | `build-appimage.sh`, `build-libmpv-lgpl.sh`, `i18n-check.mjs`, `i18n-test.mjs`, `player-test.mjs` (embedded mpv stand-in), `history-test.mjs` (when a visit counts as watch history; which episodes a bulk download queues), `routes-test.mjs` (accepted anime ids, deep links and episode numbers; anime-page scores; the Meme mode level of older settings and the High line catalogue) and `memes-unpack-test.mjs`, all run by `i18n:test`; `memes-unpack.mjs` (meme pack, run by `dev`/`build`) |
 | `THIRD-PARTY-NOTICES.md` | Bundled components and licences |
 | `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `SECURITY.md`, `.github/ISSUE_TEMPLATE/`, `.github/pull_request_template.md` | Contributor docs and forms. Keep them in step with the rules here |
 | `docs/` | Gitignored and out of date (describes an older stack). Do not trust or copy it. |
@@ -89,7 +90,7 @@ system `libmpv.so.2` for the embedded player in debug builds, and `ffmpeg` for d
 | Run the app (dev, hot reload) | `npx --no-install tauri dev` (starts Vite on port 1420) |
 | Frontend only | `npm run dev` |
 | Type-check | `npx --no-install tsc --noEmit -p tsconfig.json` |
-| Frontend build | `npm run build` (`tsc && vite build`) |
+| Frontend build | `npm run build` (unpacks the meme pack, then `tsc && vite build`) |
 | Debug build with the UI embedded | `npx --no-install tauri build --debug --no-bundle` → `src-tauri/target/debug/anix` |
 | Rust check | `cd src-tauri && cargo check --offline` |
 | Rust tests | `cd src-tauri && cargo test --offline` (one file: `--test <name>_tests`) |
@@ -99,11 +100,14 @@ system `libmpv.so.2` for the embedded player in debug builds, and `ffmpeg` for d
 
 Notes:
 
+- `npm run dev`/`build` first unpack `assets/memes.zip` (checked against `assets/memes.zip.sha256`) into the gitignored `public/memes/` (`scripts/memes-unpack.mjs`, tested by `scripts/memes-unpack-test.mjs`). The images are for Meme mode › High and are not under the MIT licence (`THIRD-PARTY-NOTICES.md`). To change the pack, rebuild the zip deterministically (`LC_ALL=C` sorted names, every mtime 2026-11-01 00:00 with `TZ=UTC` for both `touch` and `zip`, `zip -X -9 -D`) and update the hash; every image must be shown somewhere (`scripts/routes-test.mjs` checks it).
 - `plugin_host_reader_tests` reads `../plugins/src/<id>/provider.js`. It needs the extensions repo cloned next to this one, in a folder named exactly `plugins` (`git clone <extensions-repo-url> plugins`).
 - `cargo build` / `cargo test` replace `target/debug/anix` with a dev-mode binary that loads `http://localhost:1420`. If you need the binary with the UI embedded, rebuild it with `tauri build --debug --no-bundle` just before you use it.
 - Only one instance runs at a time (single-instance plugin). A second launch hands its arguments to the running window. Stop only the processes you started. Never kill every `anix` process.
 - Debug-only switches: `ANIX_CATALOGUE_DOWN=anilist,myanimelist,…` simulates catalogue outages, and `ANIX_TEST_NOTIFICATION=1` shows a sample notification.
 - `ANIX_PLAYER_ENGINE=web` or `--web-player` forces the web player. `--background` runs the release checks with no window.
+- Crash handling: `running.marker` in the data folder counts starts in a row that did not exit cleanly (`system/session_marker.rs`). One shows a notice; two start **safe mode** (`system/safe_mode.rs`, decided in `main` before WebKit starts): web player, `WEBKIT_DISABLE_COMPOSITING_MODE=1`, no extension-list refresh at start, no reopened screen. One clean exit ends it. To try it, write `1 1` into a scratch profile's `running.marker`.
+- Updates: after an in-app update the old AppImage stays as `<name>.bak` and `update-rollback.json` records both versions, so Settings › System can go back (`clients/update.rs`: `rollback_available`, `roll_back`). `version.json` may list `"bad_versions"`; a listed running version gets a notice at start.
 - The only deep link is `anix://anime/<id>` (negative ids allowed), parsed by `parseDeepLink` in `src/lib/routes.ts`.
   An AppImage registers the `anix://`/`anilili://` handler itself on start (`system/url_handler.rs`: one hidden `.desktop` file in `$XDG_DATA_HOME/applications`, rewritten only when the AppImage it names is gone). Tests pass a temp data folder and never run `xdg-mime`.
 
@@ -128,6 +132,8 @@ Notes:
 - RPM and DEB builds bundle no libmpv and default to the web player.
 
 ## Hard rules
+
+Read [CONSTRAINTS.md](CONSTRAINTS.md) before you write code. It holds the quality floor and the measured numbers that must not get worse. Never weaken it to make a change pass.
 
 ### Security and privacy
 - **No secrets or personal data** in code, tests, fixtures, logs or docs. That means no tokens, passwords, client secrets, emails, user names or home paths. The OAuth client ids already in `commands/auth.rs` / `commands/mal.rs` are public PKCE ids. Do not copy them anywhere else. Build-time ids come from env vars.
@@ -155,6 +161,7 @@ Notes:
 ### Database
 - **Migrations only add.** Add tables, columns and indexes (`CREATE … IF NOT EXISTS`, `ALTER TABLE … ADD COLUMN`). Never drop or rename user data. All migrations run in one transaction in `db::run_migrations`. When a layout must change, copy the rows into the new layout and keep anything you cannot understand under another name (see `migrate_watch_history`).
 - Settings files are written atomically (tmp + rename). A file that cannot be read is moved aside as `*.corrupt`, never overwritten.
+- **A failure never deletes saved data.** A timeout, a 5xx, a 403 such as "API disabled", or a failed download never deletes, uninstalls or lowers stored state (progress, list status, installed extensions, finished files). Mark it stale and retry later.
 
 ### UI: themes, motion, access, layout
 - **All 9 themes** must look right: `dark`, `oled`, `light`, `mocha`, `hacker`, `dracula`, `tokyo-night`, `manga`, `comic`. Use the colour tokens (Tailwind `bg-*`, `border-*`, `accent-*` → CSS variables in `themes.css`). Never hard-code colours. Check contrast in `light` and `manga` as well as the dark themes.
@@ -176,7 +183,7 @@ Notes:
 - Manifest fields: `id` (`[A-Za-z0-9_-]`, ≤ 64), `name`, `version`, `author`, `description`, `type`, `language` (`javascript` or `typescript`, transpiled with oxc), `lang`, optional `languages {sub?, dub?}` (ISO 639-1), `icon` (`https://` or `data:image/`), `payload` or `payloadURI`, `userConfig`, `changelog`.
 - Repositories: an https JSON list of manifests, `{name, plugins}`, or one manifest. Limits: 2 MB each for index, manifest and payload, and at most 200 plugins. `file://` repos are allowed only with `ANIX_DEV_PLUGIN_REPOS=1`.
 - **Sandbox** (`plugins/engine.rs`): one QuickJS runtime per plugin on its own thread, with memory/stack limits and an interrupt. No module loader, file system or process access. Load ≤ 10 s, timers ≤ 60 s, `$sleep` ≤ 2 s.
-- **Network** (`plugins/net.rs`): through the shared clients (DoH). Timeout 15 s by default, 30 s max. Responses ≤ 16 MB, requests ≤ 4 MB. **Private and loopback targets are denied** (`clients/net_guard.rs`): by the URL's host, by a resolver that drops private DNS answers before connecting, and on every redirect hop. The same guard covers the stream and subtitle links extensions return (stream checks in `providers/manager.rs`, the stream proxy's upstream, subtitles fetched for external players). `plugins/provider.rs` also drops stream and subtitle links whose host is written as a private address or `localhost`, so they never reach downloads or external players. Do not add a way around that, except `plugin_run --allow-local` and the test allowances (`allow_private_network`, `AnimeProvider::allows_private_network`).
+- **Network** (`plugins/net.rs`): through the shared clients (DoH). Timeout 15 s by default, 30 s max. Responses ≤ 16 MB, requests ≤ 4 MB. **Private and loopback targets are denied** (`clients/net_guard.rs`): by the URL's host, by a resolver that drops private DNS answers before connecting, and on every redirect hop. The same guard covers the stream and subtitle links extensions return (stream checks in `providers/manager.rs`, the stream proxy's upstream, subtitles fetched for external players, and everything the downloader fetches itself in `downloads/mod.rs`: playlists, segments, keys, init files, direct files and subtitles, on every redirect hop; download tests allow their loopback servers with `allow_private_origin_for_tests`). `plugins/provider.rs` also drops stream and subtitle links whose host is written as a private address or `localhost`, so they never reach downloads or external players. Do not add a way around that, except `plugin_run --allow-local` and the test allowances (`allow_private_network`, `AnimeProvider::allows_private_network`).
   - Known limits: requests made through the in-app browser session (`self.session.fetch` in `net.rs`) are checked only by the URL's host before sending; WebKit resolves names and follows redirects itself. ffmpeg, mpv and VLC resolve stream host names themselves, so a host name that resolves to a private address is not caught for downloads and external players. A proxy the user set in `HTTP(S)_PROXY`/`ALL_PROXY` is resolved without the filter (`net_guard::proxy_hosts`), so a local proxy given by name keeps working.
 - Globals live in `plugins/prelude.js` (`fetch`, `LoadDoc`, `CryptoJS`, `$store`, `$anix`, …). A new global needs a test in `plugin_engine_tests.rs`.
 - Try an extension in the real runtime:
@@ -203,7 +210,7 @@ New logic needs a test in the same change.
   - Name tests as sentences describing the behaviour (`loads_only_from_the_stream_proxy`).
   - Cover the refusal paths for anything at a trust boundary (proxy, plugin network, file paths, deep links, external players).
   - A test that checks backend text in English calls `english_ui()` (`tests/english_ui/mod.rs`) first. Otherwise the text follows the machine's locale and settings, and the test reads the real `~/.config/anix`.
-- **TypeScript:** there is no test runner. Keep logic in pure functions in `src/lib/` or `src/i18n/core.ts`, and add `node:assert/strict` cases to `scripts/i18n-test.mjs` (or a similar node script).
+- **TypeScript:** no test framework is installed. Keep logic in pure functions in `src/lib/` or `src/i18n/core.ts`, and add `node:assert/strict` cases to `scripts/i18n-test.mjs` (or a similar node script). New test files can use Node's built-in `node:test` (`node --test`).
 - **DB:** schema changes need a case in `db_tests.rs` that opens an older layout and checks that no rows are lost.
 
 ## Commits
@@ -223,6 +230,7 @@ One logical change per commit. Never commit secrets, build output (`dist/`, `tar
 - [ ] `npx --no-install tsc --noEmit -p tsconfig.json` passes
 - [ ] `cd src-tauri && cargo test --offline` passes (or the touched `--test` files, plus `cargo check`)
 - [ ] `npm run i18n:check` and `npm run i18n:test` pass; no raw user-visible strings
+- [ ] `npm run floor` is clean (no new suppressions, stubs, skipped tests, lost assertions or loosened numbers)
 - [ ] UI changes checked in all 9 themes, with reduced motion, with the keyboard, at 960 px and wide
 - [ ] New logic has tests, including refusal paths at trust boundaries
 - [ ] No GPL/nonfree options; `THIRD-PARTY-NOTICES.md` matches bundled versions

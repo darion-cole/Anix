@@ -7,6 +7,8 @@
 //! restarts the app), and otherwise reloads the page. The app uses hash routes, so a reload
 //! brings back the same screen. A page that keeps crashing is not reloaded endlessly.
 
+#![cfg_attr(not(target_os = "linux"), allow(dead_code, reason = "only WebKitGTK reports a crashed page; the reload rules stay shared and tested"))]
+
 use once_cell::sync::Lazy;
 use std::sync::Mutex;
 use std::time::Instant;

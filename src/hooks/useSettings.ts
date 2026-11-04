@@ -5,6 +5,7 @@ import type { AppSettings, UpdateInfo } from '../types';
 import { DEFAULT_THEME } from '../theme/themes';
 import { isTimeFormat, type TimeFormat } from '../lib/time';
 import { isNewerVersion } from '../lib/version';
+import { memeLevelOf, type MemeLevel } from '../lib/memeLevel';
 
 export const DEFAULT_SETTINGS: AppSettings = {
   autoplay: true,
@@ -31,6 +32,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   window_buttons: 'desktop',
   use_system_accent: false,
   playful_touches: true,
+  meme_mode: 'low',
   release_check_hours: 3,
   background_alerts: false,
   // Settings from before the key existed (1.2.0) load as embedded mpv.
@@ -66,7 +68,9 @@ async function loadSettings(): Promise<AppSettings> {
     skip_outro: oldSkip,
     // Before `doh_mode`, the DNS-over-HTTPS switch was on or off; a saved one keeps its value.
     ...(typeof stored.enable_doh === 'boolean' ? { doh_mode: stored.enable_doh ? 'on' : 'off' } : {}),
-    ...pick(stored, (key) => !isAccountKey(key)),
+    // `fun_mode` (before 1.4) becomes `meme_mode`; the next save no longer carries it.
+    ...pick(stored, (key) => !isAccountKey(key) && key !== 'fun_mode'),
+    meme_mode: memeLevelOf(stored),
   };
 }
 
@@ -93,9 +97,20 @@ export function useTimeFormat(): TimeFormat {
   return isTimeFormat(value) ? value : 'system';
 }
 
-/** The "Playful touches" switch; on unless it was turned off (older settings lack the key). */
+/** Settings › Appearance › Meme mode; 'low' until the settings have loaded. */
+export function useMemeLevel(): MemeLevel {
+  return useSettings().data?.meme_mode ?? 'low';
+}
+
+/** Medium's game bits (level, combo, stamp, toasts); on for Medium and High. */
+export function useFunMode(): boolean {
+  return useMemeLevel() !== 'low';
+}
+
+/** The "Playful touches" switch; on unless it was turned off (older settings lack the key). Meme mode Medium and High force it on. */
 export function usePlayful(): boolean {
-  return useSettings().data?.playful_touches !== false;
+  const settings = useSettings().data;
+  return settings?.playful_touches !== false || (settings?.meme_mode ?? 'low') !== 'low';
 }
 
 export function useSaveSettings() {
@@ -135,7 +150,7 @@ export function useAppVersion() {
   });
 }
 
-/** The latest release if it is newer than the running app, otherwise null. */
+/** The latest release if it is newer than the running app (or offers a switch to the build for newer systems), otherwise null. */
 export function useCheckUpdate() {
   return useQuery<UpdateInfo | null>({
     queryKey: ['checkUpdate'],
@@ -144,7 +159,7 @@ export function useCheckUpdate() {
         invoke<UpdateInfo | null>('check_for_update'),
         getVersion(),
       ]);
-      return latest && isNewerVersion(latest.version, current) ? latest : null;
+      return latest && (isNewerVersion(latest.version, current) || latest.switch_build) ? latest : null;
     },
     staleTime: 60 * 60 * 1000,
     retry: 1,

@@ -50,7 +50,7 @@ You install the .dmg once. After that, updates arrive like this:
    the macOS build. Only published releases are merged, not every upstream commit.
 2. **Every build of `macos` is published as a release** with the .dmg, the app as
    `.app.tar.gz`, and `mac-update.json`. Builds are numbered, so a macOS-only fix is offered as
-   an update even when the Anix version stays the same (shown as `1.3.0-mac.<build>`).
+   an update even when the Anix version stays the same (shown as `<version>.<build>`, for example `1.4.0.26`).
 3. **In the app**, the check at launch finds the new build and opens the update dialog by
    itself, once for each new build (it waits until you leave the player or close another dialog). You
    can also check any time from Settings › Check for updates.

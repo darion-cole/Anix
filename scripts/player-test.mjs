@@ -3,6 +3,7 @@
 //   node --experimental-strip-types scripts/player-test.mjs
 import assert from 'node:assert/strict';
 import { MpvMedia } from '../src/components/player/mpvMedia.ts';
+import { LOAD_STALL_MS, STALL_MS, watchStall } from '../src/lib/stall.ts';
 import { addedTrackId, fileSubtitleTracks, providerIndex, subtitleAtLoad, subtitleCorrection } from '../src/lib/mpvSubtitles.ts';
 
 /** A stand-in with a record of what it sent to mpv and which events it fired. */
@@ -190,3 +191,60 @@ const loaded = (paused) => ({ kind: 'loaded', tracks: [], paused });
 }
 
 console.log('player tests passed');
+
+// S4: the stall watchdog. Runs the rule second by second over a list of samples.
+{
+  const run = (samples) => {
+    let watch = null;
+    return samples.map((s, i) => {
+      const next = watchStall(watch, { now: i * 1000, phase: 'ready', wantsPlay: true, paused: false, rebuffering: false, ...s });
+      watch = next.watch;
+      return next.stuck;
+    });
+  };
+  const still = (n, s = {}) => Array.from({ length: n }, () => ({ time: 4, ...s }));
+  const limit = STALL_MS / 1000;
+  // Playing, position frozen: stuck once the limit has passed, not before.
+  const frozen = run(still(limit + 1));
+  assert.equal(frozen[limit - 1], false);
+  assert.equal(frozen[limit], true);
+  // Moving playback is never stuck.
+  assert.ok(!run(Array.from({ length: 30 }, (_, i) => ({ time: i }))).some(Boolean));
+  // A pause by the user never counts, however long.
+  assert.ok(!run(still(40, { paused: true, wantsPlay: false })).some(Boolean));
+  // The player's own refill pause (rebuffering) does count.
+  assert.equal(run(still(limit + 1, { paused: true, rebuffering: true }))[limit], true);
+  // Loading gets the longer limit.
+  const loading = run(still(LOAD_STALL_MS / 1000 + 1, { phase: 'loading', time: 0 }));
+  assert.equal(loading[limit], false);
+  assert.equal(loading[LOAD_STALL_MS / 1000], true);
+  // A new phase restarts the clock: 9 s loading then 2 s ready is not stuck.
+  assert.ok(!run([...still(9, { phase: 'loading', time: 0 }), ...still(2, { time: 0 })]).some(Boolean));
+  // A failed load is the error screen's job, not the watchdog's.
+  assert.ok(!run(still(40, { phase: 'error' })).some(Boolean));
+  // A stall that clears itself, then a later freeze: the watchdog flags the second one too.
+  const twice = run([...still(limit + 1), ...Array.from({ length: 5 }, (_, i) => ({ time: 5 + i })), ...still(limit + 1, { time: 60 })]);
+  assert.equal(twice[limit], true);
+  assert.equal(twice[limit + 1 + 5 + limit], true);
+  assert.equal(twice[limit + 1 + 2], false, 'moving again is not stuck');
+}
+console.log('stall watchdog: ok');
+
+// S4: per-extension progress under the spinner.
+{
+  const { applyProgress, progressSummary, MAX_NAMES } = await import('../src/lib/sourceProgress.ts');
+  const key = { anilistId: 21, episode: 2, category: 'sub' };
+  const ev = (provider, state, over = {}) => ({ anilist_id: 21, episode: 2, category: 'sub', provider, state, ...over });
+  let list = [];
+  for (const e of [ev('a', 'asking'), ev('b', 'asking'), ev('c', 'asking'), ev('b', 'failed')]) list = applyProgress(list, e, key);
+  assert.deepEqual(list, [['a', 'asking'], ['b', 'failed'], ['c', 'asking']], 'order of first ask, latest state');
+  assert.equal(applyProgress(list, ev('a', 'asking'), key), list, 'no change, same list');
+  assert.equal(applyProgress(list, ev('z', 'asking', { episode: 3 }), key), list, 'another episode is ignored');
+  assert.equal(applyProgress(list, ev('z', 'asking', { category: 'dub' }), key), list, 'another audio is ignored');
+  assert.equal(applyProgress(list, ev('z', 'asking', { anilist_id: 1 }), key), list, 'another title is ignored');
+  assert.deepEqual(progressSummary(list), { asking: ['a', 'c'], more: 0, failed: 1 });
+  const many = Array.from({ length: MAX_NAMES + 3 }, (_, i) => [`p${i}`, 'asking']);
+  assert.deepEqual(progressSummary(many).more, 3);
+  assert.equal(progressSummary(many).asking.length, MAX_NAMES);
+  console.log('lookup progress: ok');
+}

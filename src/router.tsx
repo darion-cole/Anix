@@ -16,7 +16,6 @@ import { ErrorBoundary } from './components/ErrorBoundary';
 import { Sidebar } from './components/Sidebar';
 import { ToastContainer } from './components/Toast';
 import { AuthDialog } from './components/AuthDialog';
-import { BulkDownloadDialog } from './components/BulkDownloadDialog';
 import { UpdateDialog } from './components/UpdateDialog';
 import { EngineConfirmDialog } from './components/player/EngineConfirmDialog';
 import { CommandPalette } from './components/CommandPalette';
@@ -26,19 +25,28 @@ import { EmptyState } from './components/ui/EmptyState';
 import { hasOpenModal } from './components/ui/Modal';
 import { usePluginEvents } from './hooks/usePlugins';
 import { useExternalUpscaling } from './hooks/useExternalUpscaling';
+import { usePartyFollow } from './hooks/useWatchParty';
 import { usePlayful } from './hooks/useSettings';
 import { useUIStore } from './stores/uiStore';
 import { t } from './i18n';
 import { Home } from './screens/Home';
-import { Discover } from './screens/Discover';
-import { Detail } from './screens/Detail';
-import { Watch } from './screens/Watch';
-import { Library } from './screens/Library';
-import { Schedule } from './screens/Schedule';
-import { Settings } from './screens/Settings';
-import { Notifications } from './screens/Notifications';
-import { Downloads } from './screens/Downloads';
 import { openAnimeId, parseAnimeId, parseDeepLink } from './lib/routes';
+
+// Home is in the first file; the other screens (and the player's hls.js) load on their first visit,
+// which keeps the start-up file small. Once loaded, a screen renders at once on later visits.
+const Discover = React.lazy(() => import('./screens/Discover').then((m) => ({ default: m.Discover })));
+const Detail = React.lazy(() => import('./screens/Detail').then((m) => ({ default: m.Detail })));
+const Watch = React.lazy(() => import('./screens/Watch').then((m) => ({ default: m.Watch })));
+const Library = React.lazy(() => import('./screens/Library').then((m) => ({ default: m.Library })));
+const Schedule = React.lazy(() => import('./screens/Schedule').then((m) => ({ default: m.Schedule })));
+const Settings = React.lazy(() => import('./screens/Settings').then((m) => ({ default: m.Settings })));
+const Notifications = React.lazy(() =>
+  import('./screens/Notifications').then((m) => ({ default: m.Notifications })),
+);
+const Downloads = React.lazy(() => import('./screens/Downloads').then((m) => ({ default: m.Downloads })));
+const BulkDownloadDialog = React.lazy(() =>
+  import('./components/BulkDownloadDialog').then((m) => ({ default: m.BulkDownloadDialog })),
+);
 
 // The URL the app was launched with is delivered once; later mounts must not replay it.
 let launchUrlHandled = false;
@@ -62,12 +70,16 @@ const AppLayout: React.FC = () => {
   // The layout lives as long as the app, so plugin state stays current on every screen.
   usePluginEvents();
   useExternalUpscaling();
+  // A watch party guest goes wherever the host's episode is.
+  usePartyFollow();
 
   const commandPaletteOpen = useUIStore((s) => s.commandPaletteOpen);
   const playful = usePlayful();
   const setCommandPaletteOpen = useUIStore((s) => s.setCommandPaletteOpen);
   const hotkeyCheatSheetOpen = useUIStore((s) => s.hotkeyCheatSheetOpen);
   const setHotkeyCheatSheetOpen = useUIStore((s) => s.setHotkeyCheatSheetOpen);
+  // The bulk download dialog loads on first open, which keeps it out of the start-up file.
+  const bulkDownloadOpen = useUIStore((s) => s.bulkDownloadDialogOpen);
 
   // Deep links: anix://anime/:id (and the older anilili://), at launch and while running (the single-instance
   // plugin forwards a second launch to this listener).
@@ -182,14 +194,6 @@ const AppLayout: React.FC = () => {
     } else {
       main.scrollTop = navigationType === 'POP' ? scrollPositions.current.get(location.key) ?? 0 : 0;
     }
-    // The clicked link is often gone with the old screen: start keyboard and screen-reader users
-    // at the new screen's heading instead of the top of the window.
-    const active = document.activeElement;
-    if (navigationType === 'PUSH' && (!active || active === document.body || !active.isConnected)) {
-      const target = main.querySelector<HTMLElement>('h1') ?? main;
-      if (!target.hasAttribute('tabindex')) target.tabIndex = -1;
-      target.focus({ preventScroll: true });
-    }
   }, [location.key, navigationType]);
 
   return (
@@ -212,20 +216,27 @@ const AppLayout: React.FC = () => {
           }`}
         >
           <ErrorBoundary resetKey={location.pathname} playful={playful}>
-            {isWatchScreen ? (
-              <Outlet />
-            ) : (
-              <div className="mx-auto w-full max-w-[1600px]">
+            <React.Suspense fallback={null}>
+              {isWatchScreen ? (
                 <Outlet />
-              </div>
-            )}
+              ) : (
+                <div className="mx-auto w-full max-w-[1600px]">
+                  <Outlet />
+                </div>
+              )}
+              <FocusNewScreen mainRef={mainRef} />
+            </React.Suspense>
           </ErrorBoundary>
         </main>
       </div>
 
       <ToastContainer placement={isWatchScreen ? 'top-center' : 'bottom-right'} />
       <AuthDialog />
-      <BulkDownloadDialog />
+      {bulkDownloadOpen && (
+        <React.Suspense fallback={null}>
+          <BulkDownloadDialog />
+        </React.Suspense>
+      )}
       <UpdateDialog />
       <EngineConfirmDialog />
       <CommandPalette
@@ -238,6 +249,25 @@ const AppLayout: React.FC = () => {
       />
     </div>
   );
+};
+
+/**
+ * The clicked link is often gone with the old screen: start keyboard and screen-reader users at the new
+ * screen's heading instead of the top of the window. It sits inside the Suspense boundary, so on a screen's
+ * first visit it runs once that screen has loaded and its heading exists.
+ */
+const FocusNewScreen: React.FC<{ mainRef: React.RefObject<HTMLElement> }> = ({ mainRef }) => {
+  const location = useLocation();
+  const navigationType = useNavigationType();
+  useLayoutEffect(() => {
+    const main = mainRef.current;
+    const active = document.activeElement;
+    if (!main || navigationType !== 'PUSH' || (active && active !== document.body && active.isConnected)) return;
+    const target = main.querySelector<HTMLElement>('h1') ?? main;
+    if (!target.hasAttribute('tabindex')) target.tabIndex = -1;
+    target.focus({ preventScroll: true });
+  }, [location.key, navigationType, mainRef]);
+  return null;
 };
 
 /** Rejects `/watch/abc/x` and the like before the player sees NaN ids. */

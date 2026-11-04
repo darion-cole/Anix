@@ -193,6 +193,9 @@ pub fn open_external(url: String) -> Result<(), String> {
 /// Maps the player setting to a fixed binary name. The caller's string never becomes the
 /// program that is executed; `builtin` has no external binary, so it falls back to mpv.
 pub fn resolve_player_bin(player: Option<&str>) -> Result<&'static str, String> {
+    if crate::system::is_flatpak() {
+        return Err("mpv and VLC cannot be started from the Flatpak yet. Play it in Anix instead.".to_string());
+    }
     match player.map(|p| p.to_lowercase()).as_deref() {
         None | Some("") | Some("mpv") | Some("builtin") => Ok("mpv"),
         Some("vlc") => Ok("vlc"),
@@ -345,7 +348,7 @@ pub async fn fetch_subtitle_files(subtitles: &[ExternalSubtitle], referer: Optio
         let (client, dir, sub, referer) = (client.clone(), dir.clone(), sub.clone(), referer.map(str::to_string));
         tasks.spawn(async move {
             let body = if let Some(local) = crate::stream_proxy::local_subtitle_path(&sub.url) {
-                tokio::fs::read(local).await.ok()?.into()
+                tokio::fs::read(local).await.ok()?
             } else {
                 let url = validate_media_url(&sub.url).ok()?;
                 crate::clients::net_guard::check_public_url(&url::Url::parse(&url).ok()?).ok()?;
@@ -353,7 +356,8 @@ pub async fn fetch_subtitle_files(subtitles: &[ExternalSubtitle], referer: Optio
                 if let Some(r) = referer {
                     request = request.header("Referer", r);
                 }
-                request.send().await.ok()?.error_for_status().ok()?.bytes().await.ok()?
+                let response = request.send().await.ok()?.error_for_status().ok()?;
+                crate::stream_proxy::read_limited(response, crate::downloads::MAX_SUBTITLE_BYTES).await.ok()?
             };
             let format = crate::downloads::detect_subtitle_format(&body)?;
             let path = dir.join(subtitle_file_name(nonce, index, sub.language.as_deref(), format.extension()));
