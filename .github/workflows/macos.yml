@@ -16,6 +16,12 @@ on:
       # The daily sync job is not part of the app.
       - '.github/workflows/sync-upstream.yml'
   workflow_dispatch:
+    inputs:
+      runner:
+        description: 'Build machine. Intel builds the same Apple Silicon app; use it when GitHub has no Apple Silicon machine free.'
+        type: choice
+        default: macos-15
+        options: [macos-15, macos-15-intel]
 
 permissions:
   contents: write
@@ -33,8 +39,9 @@ env:
 jobs:
   build:
     name: Build macOS app
-    # GitHub retired its macOS 14 machines in November 2026.
-    runs-on: macos-15
+    # GitHub retired its macOS 14 machines in November 2026. A manual run can pick an Intel
+    # machine, which cross-builds the same arm64 app from the cached arm64 libmpv.
+    runs-on: ${{ inputs.runner || 'macos-15' }}
 
     steps:
       - name: Checkout repository
@@ -65,9 +72,10 @@ jobs:
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
             src-tauri/target/
-          key: macos-cargo-${{ hashFiles('src-tauri/Cargo.lock') }}
+          # Build scripts run on the build machine, so Intel and Apple Silicon keep separate caches.
+          key: macos-cargo-${{ runner.arch }}-${{ hashFiles('src-tauri/Cargo.lock') }}
           restore-keys: |
-            macos-cargo-
+            macos-cargo-${{ runner.arch }}-
 
       - name: Restore libmpv
         id: libmpv
@@ -78,8 +86,15 @@ jobs:
 
       # Only when the cache is empty (a changed script whose macos-libmpv.yml run has not
       # finished): the full build, which takes most of an hour.
+      # An Intel machine would build an Intel libmpv, which the arm64 app cannot load.
+      - name: Refuse an Intel build without the cached libmpv
+        if: steps.libmpv.outputs.cache-hit != 'true' && runner.arch != 'ARM64'
+        run: |
+          echo "::error::No cached arm64 libmpv; run macos-libmpv.yml on Apple Silicon first."
+          exit 1
+
       - name: Build libmpv
-        if: steps.libmpv.outputs.cache-hit != 'true'
+        if: steps.libmpv.outputs.cache-hit != 'true' && runner.arch == 'ARM64'
         run: |
           brew install nasm pkgconf
           python3 -m venv "$RUNNER_TEMP/venv"
