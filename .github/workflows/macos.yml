@@ -25,6 +25,8 @@ on:
 
 permissions:
   contents: write
+  # Reading the libmpv set uploaded by macos-libmpv.yml when the cache has lost it.
+  actions: read
 
 concurrency:
   group: macos-${{ github.ref }}
@@ -86,12 +88,34 @@ jobs:
 
       # Only when the cache is empty (a changed script whose macos-libmpv.yml run has not
       # finished): the full build, which takes most of an hour.
-      # An Intel machine would build an Intel libmpv, which the arm64 app cannot load.
-      - name: Refuse an Intel build without the cached libmpv
+      # An Intel machine would build an Intel libmpv, which the arm64 app cannot load, so it
+      # takes the set uploaded by the newest macos-libmpv.yml run made from the same script.
+      - name: Find the uploaded libmpv set
+        id: libmpv_run
         if: steps.libmpv.outputs.cache-hit != 'true' && runner.arch != 'ARM64'
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          echo "::error::No cached arm64 libmpv; run macos-libmpv.yml on Apple Silicon first."
+          set -euo pipefail
+          want=$(git rev-parse HEAD:scripts/build-libmpv-lgpl-macos.sh)
+          for line in $(gh api "repos/${{ github.repository }}/actions/workflows/macos-libmpv.yml/runs?status=success&per_page=20" \
+              --jq '.workflow_runs[] | "\(.id),\(.head_sha)"'); do
+            id=${line%%,*}; sha=${line#*,}
+            if [ "$(git rev-parse "$sha:scripts/build-libmpv-lgpl-macos.sh" 2>/dev/null)" = "$want" ]; then
+              echo "id=$id" >> "$GITHUB_OUTPUT"; exit 0
+            fi
+          done
+          echo "::error::No uploaded arm64 libmpv for this script; run macos-libmpv.yml on Apple Silicon first."
           exit 1
+
+      - name: Download the uploaded libmpv set
+        if: steps.libmpv_run.outputs.id
+        uses: actions/download-artifact@v4
+        with:
+          name: libmpv-macos
+          path: ${{ env.ANIX_LIBMPV_DIR }}/out
+          run-id: ${{ steps.libmpv_run.outputs.id }}
+          github-token: ${{ github.token }}
 
       - name: Build libmpv
         if: steps.libmpv.outputs.cache-hit != 'true' && runner.arch == 'ARM64'
