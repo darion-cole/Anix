@@ -18,10 +18,9 @@ on:
   workflow_dispatch:
     inputs:
       runner:
-        description: 'Build machine. Intel builds the same Apple Silicon app; use it when GitHub has no Apple Silicon machine free.'
-        type: choice
+        description: 'Build machine label (macos-15, macos-26, macos-15-intel …). Intel builds the same Apple Silicon app; use another label when GitHub has none of one kind free.'
+        type: string
         default: macos-15
-        options: [macos-15, macos-15-intel]
 
 permissions:
   contents: write
