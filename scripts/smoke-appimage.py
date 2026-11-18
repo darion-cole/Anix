@@ -7,7 +7,7 @@ Needs an X server on $DISPLAY with a window manager, xdotool, and a D-Bus sessio
 Without --webdriver: start, real clicks and keys, stay alive 30 s, quit on SIGTERM, leave nothing behind.
 With --webdriver (only where WebKitWebDriver comes from the same WebKit build the AppImage bundles,
 i.e. Ubuntu 22.04): also link the clip as a local episode, play it 30 s through the stream proxy, and
-check a real click and the fullscreen key while it plays.
+check a real click and the fullscreen key while it plays, and record how smoothly Home scrolls.
 Fails on an exit, a stopped web process (the app logs "web process stopped"), or leftover processes.
 Writes <out-dir>/result.json and screenshots; exit code 1 on any failure."""
 import json, os, shutil, signal, subprocess, sys, tempfile, time, urllib.request
@@ -27,6 +27,8 @@ res = {"appimage": os.path.basename(APPIMAGE), "webdriver": WEBDRIVER, "failures
 def fail(msg):
     res["failures"].append(msg)
     print("FAIL:", msg, flush=True)
+    if os.environ.get("GITHUB_ACTIONS"):  # annotations are readable without signing in, unlike job logs
+        print("::error::smoke: " + msg.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A"), flush=True)
 
 
 def sh(*cmd, timeout=20):
@@ -139,6 +141,26 @@ class Driver:
 
 
 SEEK = "const s=document.querySelector('[role=slider][aria-label=Seek]'); const t=s&&s.getAttribute('aria-valuenow'); return t==null?null:Number(t)"
+# Scrolls Home's scrolling element for 4 s and reports frame rate and slow frames. 1.4.0 drew about
+# 1 frame a second here with WebKit's DMA-BUF renderer turned off. Recorded only: CI draws in software.
+SCROLL = """const done = arguments[arguments.length - 1];
+const el = document.querySelector('main') || document.scrollingElement;
+const max = el.scrollHeight - el.clientHeight;
+const times = []; let last = performance.now(); const t0 = last; let dir = 1; let ended = false;
+function finish() {
+  if (ended) return; ended = true;
+  const now = performance.now(); times.shift(); const s = [...times].sort((a, b) => a - b);
+  done({fps: +(1000 * times.length / (now - t0)).toFixed(1), p95_ms: s.length ? +s[Math.floor(s.length * 0.95)].toFixed(1) : null,
+        over_100ms: times.filter(t => t > 100).length, scroll_height: max});
+}
+function step(now) {
+  if (ended) return;
+  times.push(now - last); last = now;
+  const y = el.scrollTop + dir * 18; if (y >= max) dir = -1; if (y <= 0) dir = 1; el.scrollTop = y;
+  if (now - t0 < 4000) requestAnimationFrame(step); else finish();
+}
+setTimeout(finish, 5000);  // a window that gets no animation frames still answers
+requestAnimationFrame(step);"""
 DIALOGS = "const b=[...document.querySelectorAll('[role=dialog] button')].find(x=>/^\\s*(Keep|Skip|Save|Continue|Done)\\b/.test(x.textContent)); if(b){b.click(); return true} return false"
 
 # The runtime part of the file: a static one needs no libfuse2 on the host.
@@ -155,6 +177,14 @@ try:
             time.sleep(1.5)
             if not driver.run(DIALOGS):
                 break
+        time.sleep(8)  # Home's rows load
+        try:  # recorded only: a failed measurement does not fail the smoke test
+            res["scroll_home"] = driver.call("POST", f"/session/{driver.sid}/execute/async", {"script": SCROLL, "args": []}, timeout=30)
+        except Exception as e:
+            res["scroll_home"] = {"error": f"{type(e).__name__}: {e}"}
+        print("scroll on Home:", res["scroll_home"], flush=True)
+        if os.environ.get("GITHUB_ACTIONS"):
+            print(f"::notice::scroll on Home: {json.dumps(res['scroll_home'])}", flush=True)
     else:
         app = subprocess.Popen([APPIMAGE], env=ENV, stdout=open(os.path.join(OUT, "app-stdout.log"), "w"), stderr=subprocess.STDOUT)
     win = window()
@@ -176,12 +206,15 @@ try:
         folder = os.path.join(HOME, "Videos", "Smoke")
         os.makedirs(folder, exist_ok=True)
         shutil.copy(CLIP, os.path.join(folder, "Smoke - 01.mp4"))
-        linked = driver.invoke("link_local_folder", {"anilistId": 154587, "folderPath": folder})
+        linked = step("link the clip folder", lambda: driver.invoke("link_local_folder", {"anilistId": 154587, "folderPath": folder}))
         res["linked"] = "ok" in (linked or {})
-        driver.run("location.hash = '#/watch/154587/1?cat=sub&prov=local'")
+        step("open the player", lambda: driver.run("location.hash = '#/watch/154587/1?cat=sub&prov=local'"))
         t0 = time.time(); first = None
         while time.time() - t0 < 60:
-            v = driver.run(SEEK)
+            try:
+                v = driver.run(SEEK)
+            except Exception:  # WebDriver can refuse a script while the page changes route
+                v = None
             if isinstance(v, (int, float)) and v > 0:
                 first = round(time.time() - t0, 1)
                 break
@@ -252,6 +285,14 @@ finally:
     if "web process stopped" in text:
         fail("the log reports a stopped web process")
     res["log_errors"] = [l[:200] for l in text.splitlines() if " ERROR " in l][:10]
+    if res["failures"] and os.environ.get("GITHUB_ACTIONS"):
+        # The last lines the app printed, readable in the annotations without signing in.
+        try:
+            tail = open(os.path.join(OUT, "app-stdout.log"), errors="replace").read().splitlines()[-12:]
+        except OSError:
+            tail = []
+        for line in tail + res["log_errors"][:5]:
+            print("::notice::app: " + line[:300].replace("%", "%25").replace("\r", "%0D"), flush=True)
     json.dump(res, open(os.path.join(OUT, "result.json"), "w"), indent=1)
     print(json.dumps(res, indent=1))
     sys.exit(1 if res["failures"] else 0)

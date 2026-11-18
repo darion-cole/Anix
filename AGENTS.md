@@ -18,7 +18,7 @@ Streaming sources are not built in. They come from **extensions**: JavaScript fi
 from extension repositories (see [Extensions](#extensions)). The extensions live in a separate
 repository (`../plugins`, which has its own `AGENTS.md`).
 
-- Version 1.4.0, identifier `io.anix.app`, licence MIT.
+- Version 1.4.1, identifier `io.anix.app`, licence MIT.
 - Public site: https://anix-linux.vercel.app (download page, extension list, `version.json` for update checks).
 - The app was first called **Anilili**. Old names still work and must keep working: `ANILILI_*`
   env vars, the `$anilili` plugin global, `anilili://` links, and old data folders (migrated by
@@ -71,7 +71,7 @@ React/TS UI (src/)  ──invoke()──▶  Tauri 2 commands (src-tauri/src/com
 | `src-tauri/tests/` | Integration tests, `*_support/` helpers, `fixtures/` |
 | `src-tauri/examples/plugin_run.rs` | CLI to run one extension in the real runtime |
 | `src-tauri/resources/` | Anime4K shaders, hardware-decoding self-test clip |
-| `scripts/` | `build-appimage.sh`, `build-libmpv-lgpl.sh`, `i18n-check.mjs`, `i18n-test.mjs`, `player-test.mjs` (embedded mpv stand-in), `history-test.mjs` (when a visit counts as watch history; which episodes a bulk download queues), `routes-test.mjs` (accepted anime ids, deep links and episode numbers; anime-page scores; the Meme mode level of older settings and the High line catalogue) and `memes-unpack-test.mjs`, all run by `i18n:test`; `memes-unpack.mjs` (meme pack, run by `dev`/`build`) |
+| `scripts/` | `build-appimage.sh`, `build-libmpv-lgpl.sh`, `i18n-check.mjs`, `i18n-test.mjs`, `player-test.mjs` (embedded mpv stand-in), `history-test.mjs` (when a visit counts as watch history; which episodes a bulk download queues), `routes-test.mjs` (accepted anime ids, deep links and episode numbers; anime-page scores; the Meme mode level of older settings and the High line catalogue), `home-test.mjs` (Home rows and smart-collection rules) and `memes-unpack-test.mjs`, all run by `i18n:test`; `memes-unpack.mjs` (meme pack, run by `dev`/`build`) |
 | `THIRD-PARTY-NOTICES.md` | Bundled components and licences |
 | `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `SECURITY.md`, `.github/ISSUE_TEMPLATE/`, `.github/pull_request_template.md` | Contributor docs and forms. Keep them in step with the rules here |
 | `docs/` | Gitignored and out of date (describes an older stack). Do not trust or copy it. |
@@ -124,7 +124,7 @@ Notes:
    | `ANIX_LIBMPV_DIR` | Where step 1 put libmpv |
    | `ANIX_COMICK_CLIENT_ID` | Optional, compile time. Without it, the build has no Comick sign-in. Export it in your own shell. Never commit it. |
 
-3. `scripts/build-packages.sh` builds the DEB and RPM, which use the system's WebKitGTK and GStreamer, carry no libmpv and start with the web player. It takes the same `ANIX_SITE_URL`, `ANIX_BUILD_DIR` and `ANIX_COMICK_CLIENT_ID`. It runs the same home-folder check as the AppImage script and needs `rsync`, `dpkg-deb`, `rpm2cpio` and `cpio`. `packaging/aur/` holds the `anix-bin` PKGBUILD, which repackages the release DEB. At each release, set `pkgver`, then run `updpkgsums` and `makepkg --printsrcinfo > .SRCINFO`. All builds use the same data folders, so switching between them moves nothing.
+3. `scripts/build-packages.sh` builds the DEB and RPM, which use the system's WebKitGTK and GStreamer, carry no libmpv and start with the web player. They are built with `--no-default-features --features rustls` (Cargo features in `src-tauri/Cargo.toml`), so HTTPS needs no system OpenSSL; every other build uses the default `native-tls`. It takes the same `ANIX_SITE_URL`, `ANIX_BUILD_DIR` and `ANIX_COMICK_CLIENT_ID`. It runs the same home-folder check as the AppImage script and needs `rsync`, `dpkg-deb`, `rpm2cpio` and `cpio`. `packaging/aur/` holds the `anix-bin` PKGBUILD, which repackages the release DEB. At each release, set `pkgver`, then run `updpkgsums` and `makepkg --printsrcinfo > .SRCINFO`. All builds use the same data folders, so switching between them moves nothing.
 
 - Use the script for AppImages. A plain `tauri build` AppImage misses the bundled LGPL libmpv and may pick the wrong GStreamer plugins.
 - Release AppImages are built by `.github/workflows/release.yml` in an Ubuntu 22.04 container: an AppImage only runs on systems whose glibc is at least as new as the build system's, and this base (glibc 2.35) covers Ubuntu 22.04, Mint 21, Debian 12 and everything newer. The workflow fails if the result needs a newer glibc. It runs when the version or the build scripts change, keeps the file as a 30-day artifact, and on a pushed `v*` tag also publishes it as a GitHub release with that version's CHANGELOG section as notes. The website copy (Drive, MEGA) is still uploaded by the owner. A local build on a new distribution only runs on systems as new as that one. The Comick client id comes from the repository secret `ANIX_COMICK_CLIENT_ID`. The same workflow builds the DEB and RPM on Ubuntu 22.04, installs the DEB there and the RPM on Fedora to prove their dependencies resolve, and attaches both to the release.

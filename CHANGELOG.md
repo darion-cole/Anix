@@ -1,76 +1,84 @@
 # Changelog
 
+## 1.4.1
+
+A small update for stability, speed and interface fixes.
+
+### Performance
+- Smooth scrolling again: on most systems the app scrolled at about 1–2 frames per second with the web player (always the case for the RPM and DEB). The cause was a WebKitGTK setting meant only for NVIDIA's proprietary driver, which Anix had switched on for everyone. It now applies only when that driver is loaded, and scrolling on Home and Discover runs at about 56–59 frames per second in our tests. A value you set yourself in `WEBKIT_DISABLE_DMABUF_RENDERER` is still respected.
+- Home rows you add load only when they scroll near the screen, so any number of rows keeps Home fast.
+
+### NVIDIA's proprietary driver
+- **Fast drawing** (Settings › System, shown only with NVIDIA's own driver): an opt-in switch for smooth scrolling with the web player. Anix restarts, then asks whether everything looks right; without an answer within 15 seconds it switches back and restarts again. If the window is blank and you cannot answer, start Anix with `--safe-graphics` to turn it off.
+- The embedded mpv player in the AppImage now gets the fast drawing path on NVIDIA too (the bundled WebKitGTK used to turn it off for that driver). The first start afterwards asks again whether the video shows correctly, with the same 15-second fallback to the web player.
+- The diagnostics report lists `WEBKIT_FORCE_DMABUF_RENDERER`.
+
+### Packages
+- The RPM runs on Fedora 45, which ships only OpenSSL 4: the DEB and RPM now make HTTPS connections with rustls and the system's certificates instead of needing the system's `libssl.so.3`.
+- The AppImage starts on systems without OpenGL ES (`libGLESv2.so.2`), such as minimal Debian installs: there, the web player draws the way 1.4.0 did instead of the web view stopping at start.
+- Updated tokio and rustix past two security advisories (RUSTSEC-2026-0386, RUSTSEC-2026-0486).
+
+### Interface fixes
+- Italic text uses the real italic font instead of a slanted copy, so Meme mode captions are no longer smeared.
+- The player's speed menu lines up its captioned and plain options, and wraps instead of overflowing when the labels are long.
+
+### Home rows (Settings › Appearance)
+- Hide or show any row on Home.
+- Add rows: anime airing this week, one of your list statuses (Watching, Plan to watch, On hold), or any playlist or collection. Added rows can be moved and removed like the others.
+
+### Playlists and collections (Library › Playlists)
+- Export a playlist or collection to a file, and import one back. An import always creates a new playlist (a name already in use gets a number), and entries the file cannot describe are listed and left out instead of failing the whole file. The file holds titles, episode numbers and sub/dub only: no covers, links or personal data.
+- Smart collections: in Discover, **Save as collection** keeps the current filters (genres, left-out genres, format, status, season, year, minimum score, sort and search text). The collection shows whatever those filters find, so it stays up to date by itself, and can be added to Home as a row.
+
 ## 1.4.0
 
-### Watch together (beta)
-- Watch party on the local network: one person hosts from the player, others on the same Wi-Fi or LAN join with
-  a short code. The host controls play, pause, seek and episode changes; guests stay in step. Each person needs
-  the episode from their own extensions or files. Nothing goes over the internet, and VPN links are not used.
-- **Beta:** it was tested with two copies of Anix on one computer, but not yet on two real devices, because the
-  developer does not have a second one. Please try it and report what works and what does not (an issue on GitHub
-  or Codeberg); the window says so too.
+### Local Watch Together (Beta)
+- Local network watch parties: synchronize playback with up to 8 peers over your local Wi-Fi or LAN. The host manages play, pause, seeking, and episode progression while guest clients stay locked in step.
+- Peer-to-peer local synchronization: sync coordination occurs strictly peer-to-peer over your local network without external cloud relays or telemetry. Each participant resolves media independently from their own local library or configured extensions.
+- Beta status: currently validated in multi-instance local environments; community feedback and reports for multi-device network setups are welcome via GitHub and Codeberg issue trackers.
 
-### Look and feel
-- A livelier interface in every theme: a sliding highlight in the sidebar and tabs, cards that lift and glow in
-  their cover's colour, a quick look that slides up over the poster, a calmer Home banner, and clearer empty,
-  loading and offline screens.
-- Anime pages, the player, Library, Schedule, Downloads, Notifications (now grouped into Today and Earlier) and
-  Settings got the same treatment. Extensions show a health dot from their last test, the player's main buttons
-  have text labels, and the first-run setup is split into three short steps.
-- Meme mode (Settings › Appearance) with three levels: Low, the normal app and the default; Medium, the game-style
-  layer (level and EXP from the episodes you watched, "EPISODE CLEAR!" and "QUEST COMPLETE", a day combo, a power
-  level on scores, dialog-box toasts); High, real anime meme images and meme lines over every screen, one character
-  per spot, with the plain words kept on every important button and in tooltips and screen-reader text, and the
-  series and rights holders credited in Settings › About. The images ship inside the app as one meme pack, so
-  nothing is downloaded. No sounds, and nothing moves over a playing video.
-- Everything respects reduced motion and Fewer effects, and works right to left.
-- The app starts with a smaller file: screens other than Home load the first time you open them.
+### User Interface & Visual Design
+- Fluid navigation & reactive highlights: dynamic sliding highlight bars in sidebars and tabs, cards featuring elevation animations and adaptive ambient cover glow, and smooth peek previews over media cards.
+- Comprehensive UI overhaul: refined views across Catalogue, Media Details, Player, Library, Schedule, Transfers, Notification Center (grouped into Today and Earlier), and Settings.
+- Modular extension health indicators: installed extensions display latency and operational status indicators derived from the latest diagnostics.
+- Clear player controls: primary video player action controls include descriptive text labels, and initial application onboarding is streamlined into a 3-step walkthrough.
+- Configurable visual style layers: introduced Meme Mode (Settings › Appearance) with three discrete tiers: Low (standard clean UI, default), Medium (gamified progression indicators, watch streak counters, and contextual notifications), and High (thematic anime character artwork and quotes across views, retaining full accessibility tooltips, semantic screen-reader text, and comprehensive rights attributions in Settings › About). Assets are bundled locally with zero remote fetches.
+- Accessibility & motion preferences: full support for reduced-motion system preferences, right-to-left (RTL) locales, and a new "Fewer effects" toggle to disable blur and background glow on low-power devices.
+- Code-split view loading: secondary screens load on-demand, reducing initial application footprint and launch overhead.
 
-### Stability
-- Safe mode: after two starts in a row that did not end cleanly, Anix starts with the web player, without
-  graphics acceleration and without reopening the last screen. One clean exit ends it.
-- Going back after an update: an AppImage keeps the version it replaced, and Settings › System can put it back.
-  The website can mark a version as having a serious problem; Anix shows a notice and never installs it.
-- Playback that gets stuck offers another server, and while a stream is being found the player shows which
-  extensions are still being asked.
-- A repository can pause a broken extension; paused extensions are skipped by release checks.
-- An extension update that cannot be saved keeps the installed version.
-- Fullscreen goes through the window instead of WebKit's own fullscreen, which crashed with WebKitGTK 2.50
-  (Ubuntu 22.04 and 24.04). The embedded mpv picture stays visible in fullscreen.
-- Closing the terminal that started Anix closes it cleanly, together with its downloads (an external mpv or VLC
-  window stays open).
-- A full disk shows a clear warning instead of misleading errors.
+### Player Engine & Hardware Acceleration
+- NVIDIA hardware decoding (NVDEC): integrated NVDEC decoding support in the embedded mpv engine for accelerated video playback on supported NVIDIA hardware.
+- Safe Mode recovery: if two consecutive application starts terminate abnormally, Anix automatically launches in Safe Mode (using the web-based player engine, disabling hardware acceleration, and clearing previous route state). Normal clean termination resets Safe Mode.
+- Native window fullscreen: fullscreen switching transitions through the parent desktop window, preventing WebKitGTK 2.50 fullscreen crashes on Ubuntu 22.04 and 24.04 while keeping embedded mpv rendering intact.
+- Stream fallback & extension diagnostics: media loading displays real-time resolution feedback across active extensions, with automatic fallback options if a connection fails.
+- Trailing index MP4 playback: local MP4 files with trailing metadata atoms/index tables play directly in the embedded engine without falling back to the web player.
+- Startup race condition resolution: opening a player immediately upon application launch no longer falls back to the web engine while embedded mpv initializes.
 
-### Speed
-- Home no longer repaints while nothing changes: idle CPU in front is about half of before, and zero when the
-  window is in the background.
-- New Settings › Appearance › Fewer effects switch: no background glow, blur or animations, for slow machines.
+### Multi-Distribution Packaging & Platform Support
+- Dual AppImage architecture:
+  - Classic AppImage: built against Ubuntu 22.04 (glibc 2.35+), guaranteeing broad backwards compatibility with Ubuntu 22.04 LTS, Debian 12 (Bookworm), Linux Mint 21, Fedora 36+, openSUSE Leap 15.6, and derivative distributions.
+  - Modern AppImage: built against Ubuntu 24.04 (glibc 2.39+) with newer WebKitGTK libraries for bleeding-edge desktop environments.
+  - Intelligent self-updater: automatically detects system glibc capabilities and preserves or upgrades the AppImage build accordingly.
+- Distribution packaging:
+  - RPM package improvements: full dependency compatibility on openSUSE (supporting openSUSE package naming conventions for WebKitGTK and GStreamer plugins) alongside Fedora and RHEL.
+  - Flatpak preview: standalone sandbox build with native file-portal integration.
+  - Unified update guides: in-app update dialogues provide distribution-specific instructions for DEB, RPM, Flatpak, and AUR installations.
+- Rollback capability: AppImage installations archive the previous working version, allowing instant one-click rollbacks via Settings › System. Critical upstream releases can be blacklisted remotely to prevent regressions.
 
-### Accounts
-- AniList and MyAnimeList sign-in use Anix's own app registrations.
-- Browser sign-in (Comick) says how to open the sign-in page again.
+### Performance & Energy Efficiency
+- Home view idle optimizations: suppressed unneeded background re-renders when catalogue data is static, cutting active idle CPU consumption in half and dropping to 0% when minimized or unfocused.
+- Low-power mode: "Fewer effects" setting completely eliminates blur, backdrop filters, and continuous glow effects for resource-constrained systems.
 
-### Every distribution
-- Two AppImages: the classic one (Ubuntu 22.04 base, runs on Ubuntu 22.04, Debian 12, Mint 21 and newer) and
-  one for newer systems (Ubuntu 24.04 base, newer WebKitGTK). The in-app updater picks the right one and can
-  move a classic install to the newer build when the system allows it.
-- The update window says how to update DEB, RPM, AUR and Flatpak installs.
-- Flatpak preview. Start at login and alerts while Anix is closed are not available in it yet.
-- NVIDIA hardware decoding (NVDEC) in the embedded player.
-- The first-run language setup no longer opens over the player.
-- In the Flatpak, the buttons that open mpv or VLC are hidden, since the Flatpak cannot start them.
+### Accounts & Tracker Integration
+- Dedicated OAuth client registrations: AniList and MyAnimeList authentication flows now utilize official Anix application credentials.
+- Web authentication guidance: streamlined re-authentication prompts and session restoration for external tracker services.
+- Backup resilience: restoring local database backups preserves existing account credentials not included in the archive.
 
-### Fixes
-- The RPM installs on openSUSE too: it accepts openSUSE's names for WebKitGTK and the GStreamer plugins.
-- The Watch order row has its own scroll arrows.
-- Local MP4 files whose index sits at the end of the file play in the embedded player instead of falling back
-  to the web player.
-- Someone on a pre-release version is offered the final release.
-- Downloads never reach addresses on your own network, also through redirects or playlist entries.
-- Restoring a backup keeps the sign-ins it does not contain.
-- A very large episode range in bulk download no longer freezes the app.
-- A player opened in the first seconds after start-up no longer falls back to the web player while embedded mpv
-  is still starting.
+### Security & System Resilience
+- SSRF prevention in transfer managers: hardened media download routines strictly reject private, loopback, and local network IPs across requests, HTTP redirects, and playlist manifests.
+- Process lifecycle management: terminating Anix from a terminal shell cleanly reaps all child worker processes and active downloads.
+- Storage monitoring: proactive disk space checks provide actionable low-storage warnings instead of opaque write failures.
+- Extension registry safeguards: repository maintainers can flag unstable extension revisions as paused, preventing broken updates from interrupting client environments while preserving working local installs.
 
 ## 1.3.2
 

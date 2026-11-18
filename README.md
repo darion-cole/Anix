@@ -6,8 +6,8 @@
 
 ### An anime catalogue, tracker, and local library player for Linux
 
-[![Platform](https://img.shields.io/badge/Platform-Linux%20(AppImage%20%7C%20RPM%20%7C%20DEB)-E95420?logo=linux&logoColor=white)](https://anix-linux.vercel.app)
-[![Version](https://img.shields.io/badge/Version-1.3.2-blue.svg)](CHANGELOG.md)
+[![Platform](https://img.shields.io/badge/Platform-Linux%20(AppImage%20%7C%20RPM%20%7C%20DEB%20%7C%20Flatpak)-E95420?logo=linux&logoColor=white)](https://anix-linux.vercel.app)
+[![Version](https://img.shields.io/badge/Version-1.4.1-blue.svg)](CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 <p align="center">
@@ -22,6 +22,7 @@
 
 ## Contents
 
+- [Promo video](#promo-video)
 - [Screenshots](#screenshots)
 - [Features](#features)
 - [Installation](#installation)
@@ -31,6 +32,16 @@
 - [License](#license)
 
 ---
+
+## Promo video
+
+<p align="center">
+  <a href="screenshots/anix-promo.mp4"><img src="screenshots/promo-poster.jpg" alt="Anix promo video: click to play" width="720" /></a>
+  <br />
+  <a href="screenshots/anix-promo.mp4"><b>▶ Watch the promo (1 min)</b></a>
+</p>
+
+<sub>Music: “Play Now” by Cleyton Kauffman (CC0). Voice: Qwen3-TTS. The anime shown belongs to its rights holders and appears only to demonstrate the app.</sub>
 
 ## Screenshots
 
@@ -107,19 +118,26 @@ Anix features a modular plugin architecture supporting JavaScript extensions for
 
 ## Installation
 
-Packages for Linux are available from the project website: <https://anix-linux.vercel.app/download>, [GitHub Releases](https://github.com/MaidLover69/Anix/releases), and [Codeberg Releases](https://codeberg.org/MaidLover69/Anix/releases).
+Packages for Linux are available from the project website: <https://anix-linux.vercel.app/download>, [Codeberg Releases](https://codeberg.org/MaidLover69/Anix/releases), and [GitHub Releases](https://github.com/MaidLover69/Anix/releases).
 
-- **Direct AppImage Download:** [Anix_1.3.1_amd64.AppImage](https://drive.google.com/file/d/1c5IhzjZMVEbJJ6K3B1bZxlU4nWjh8ChI/view?usp=sharing)
-- [GitHub Releases](https://github.com/MaidLover69/Anix/releases) • [Codeberg Releases](https://codeberg.org/MaidLover69/Anix/releases)
+- **Direct Cloud Downloads:**
+  - **[Google Drive Folder](https://drive.google.com/drive/folders/1U6_kpB45iJxYZrEwfbt4n66TnssdH5-W?usp=sharing)** — Contains all Anix 1.4 packages (AppImage, DEB, RPM, Flatpak) and extension files.
+  - **[MEGA Alternative Folder](https://mega.nz/folder/7ExSlB6R#qA3pX6jIo6TIZXkXdvtnVg)** — Alternative mirror containing all Anix application packages.
+- **Releases:** Download AppImage (Classic & Modern), DEB, RPM, or Flatpak from [Codeberg Releases](https://codeberg.org/MaidLover69/Anix/releases) or [GitHub Releases](https://github.com/MaidLover69/Anix/releases).
+- **Arch User Repository (AUR):** Available via `anix-bin`.
 
 ### AppImage (Universal, any distribution)
 
-```bash
-chmod +x Anix_1.4.0_amd64.AppImage
-./Anix_1.4.0_amd64.AppImage
-```
+Anix provides two official AppImage variants:
+- **Classic (`Anix_1.4.1_amd64.AppImage`)**: Built on Ubuntu 22.04 LTS (glibc 2.35+). Works across almost every Linux distribution including Ubuntu 22.04+, Debian 12+, Linux Mint 21+, Fedora 36+, openSUSE Leap 15.6+, Arch Linux, and CachyOS.
+- **Modern (`Anix_1.4.1_amd64-modern.AppImage`)**: Built on Ubuntu 24.04 LTS (glibc 2.39+) with newer WebKitGTK and runtime libraries for bleeding-edge systems.
 
-**Works on almost every distribution:** the AppImage is built on Ubuntu 22.04, so it runs on Ubuntu 22.04, Linux Mint 21, Debian 12, Fedora 36, openSUSE Leap 15.6 and anything newer, Arch and CachyOS included, with nothing to install. Make it executable (the `chmod +x` above, or tick *Allow executing file as program* in the file's properties) and start it.
+The built-in updater automatically detects system compatibility and selects or upgrades to the appropriate AppImage variant.
+
+```bash
+chmod +x Anix_1.4.1_amd64.AppImage
+./Anix_1.4.1_amd64.AppImage
+```
 
 **FUSE 2:** AppImages need FUSE 2 to start. Fedora usually has it; on other distributions install it once if the AppImage does not open:
 
@@ -131,7 +149,7 @@ chmod +x Anix_1.4.0_amd64.AppImage
 | openSUSE | `sudo zypper install libfuse2` |
 | Fedora (only if missing) | `sudo dnf install fuse-libs` |
 
-Without FUSE, start it with `./Anix_1.4.0_amd64.AppImage --appimage-extract-and-run`.
+Without FUSE, start it with `./Anix_1.4.1_amd64.AppImage --appimage-extract-and-run`.
 
 **Missing thumbnails:** from 1.3.0 on, the AppImage fixes this itself (it sets `G_TLS_GNUTLS_PRIORITY=NORMAL` when your system has no GnuTLS crypto policy), so no command is needed any more. A value you set yourself is kept. Only 1.2.0 still needs the old workaround: `G_TLS_GNUTLS_PRIORITY=NORMAL ./Anix_1.2.0_amd64.AppImage`.
 
@@ -142,7 +160,7 @@ Without FUSE, start it with `./Anix_1.4.0_amd64.AppImage --appimage-extract-and-
 From 1.3.0 on, videos play in an embedded mpv player by default (Settings › Playback › Player engine).
 
 - **The window is blank or the video does not show after switching to embedded mpv:** wait 15 seconds. Anix asks whether the player shows correctly and, without an answer, goes back to the web player and restarts by itself. The 15 seconds only count while the Anix window is in front and focused, and a notice in the notification centre says when this happened.
-- **Start once with the web player, whatever the setting says:** run `./Anix_1.4.0_amd64.AppImage --web-player`, or set `ANIX_PLAYER_ENGINE=web` (for example `ANIX_PLAYER_ENGINE=web ./Anix_1.4.0_amd64.AppImage`). Then pick the engine you want in Settings › Playback.
+- **Start once with the web player, whatever the setting says:** run `./Anix_1.4.1_amd64.AppImage --web-player`, or set `ANIX_PLAYER_ENGINE=web` (for example `ANIX_PLAYER_ENGINE=web ./Anix_1.4.1_amd64.AppImage`). Then pick the engine you want in Settings › Playback.
 - **Black picture with sound:** set Settings › Playback › Hardware decoding to *Always copy-back* (or *Off*). *Automatic* already uses copy-back unless a hidden self-test passed on your machine; Settings › System › Hardware video decoding shows its result.
 
 ---

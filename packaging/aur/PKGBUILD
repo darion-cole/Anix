@@ -8,7 +8,7 @@
 # At each release: set pkgver, reset pkgrel to 1, run `updpkgsums` and
 # `makepkg --printsrcinfo > .SRCINFO`, then test with `makepkg -si`.
 pkgname=anix-bin
-pkgver=1.3.2
+pkgver=1.4.1
 pkgrel=1
 pkgdesc='Anime catalogue, tracker, library and player'
 arch=('x86_64')
@@ -19,7 +19,6 @@ depends=(
   'gtk3'
   'libayatana-appindicator'
   'librsvg'
-  'openssl'
   'gst-plugins-base'
   'gst-plugins-good'
   'gst-plugins-bad'
@@ -36,7 +35,7 @@ conflicts=('anix')
 options=('!strip' '!debug')
 source=("https://github.com/MaidLover69/Anix/releases/download/v${pkgver}/Anix_${pkgver}_amd64.deb"
         "LICENSE-${pkgver}::https://raw.githubusercontent.com/MaidLover69/Anix/v${pkgver}/LICENSE")
-sha256sums=('3d46b0cde393ac6bcd873d251efe3e7730ec12d64a9fbb632f542971894b0881'
+sha256sums=('d5d6963cc259ca47542b53f44b3a85a4d3cb988b46f6504f2ffa0b4288b4ea0c'
             '18b58b87a6862f3651243d210089290c8c329583702b76710d5685c2545edde2')
 
 package() {
