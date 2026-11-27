@@ -80,6 +80,9 @@ pub enum Action {
     SetSpeed { value: f64 },
     /// `None` turns the track off.
     SetAudioTrack { id: Option<i64> },
+    /// The video track, which for an HLS stream is one of its resolutions. `None` is mpv's own
+    /// pick (`auto`), never "off".
+    SetVideoTrack { id: Option<i64> },
     SetSubTrack { id: Option<i64> },
     /// The second subtitle, drawn at the top.
     SetSecondarySubTrack { id: Option<i64> },
@@ -188,6 +191,7 @@ pub fn plan(action: &Action, proxy_base: &str) -> Result<Vec<Op>, String> {
         Action::SetMute { muted } => vec![Set("mute", yes_no(*muted))],
         Action::SetSpeed { value } => vec![Set("speed", format!("{:.3}", finite(*value, "Speed")?.clamp(0.25, 4.0)))],
         Action::SetAudioTrack { id } => vec![Set("aid", track(*id)?)],
+        Action::SetVideoTrack { id } => vec![Set("vid", id.map_or_else(|| Ok("auto".to_string()), |id| track(Some(id)))?)],
         Action::SetSubTrack { id } => vec![Set("sid", track(*id)?)],
         Action::SetSecondarySubTrack { id } => vec![Set("secondary-sid", track(*id)?)],
         Action::SetSubDelay { seconds } => {
@@ -321,6 +325,9 @@ impl Player {
                     "lang": field("lang"),
                     "title": field("title"),
                     "codec": field("codec"),
+                    "demux_h": field("demux-h").and_then(|v| v.parse::<i64>().ok()),
+                    // An HLS variant's declared bits per second; tells equal heights apart.
+                    "hls_bitrate": field("hls-bitrate").and_then(|v| v.parse::<i64>().ok()),
                     // The file or URL of a track added with sub-add; none for the file's own tracks.
                     "external_filename": field("external-filename"),
                     "selected": field("selected").as_deref() == Some("yes"),
@@ -360,6 +367,16 @@ static WEB_PLAYBACK: Mutex<bool> = Mutex::new(false);
 /// This start moved to embedded mpv after a crash during web playback; told once setup runs.
 static CRASH_SWITCH_NOTICE: AtomicBool = AtomicBool::new(false);
 
+/// The web player is used only because a system package has no libmpv: the page shows no notice
+/// (Settings still says why); the AppImage, whose own libmpv failed, stays loud.
+static QUIET_FALLBACK: AtomicBool = AtomicBool::new(false);
+
+/// Whether a libmpv load failure is quiet: the system's library is just not installed, or this
+/// is the Flatpak, which can never load one (the page saves "mpv" there too).
+pub fn quiet_no_libmpv(bundled: bool, flatpak: bool) -> bool {
+    flatpak || !bundled
+}
+
 fn set_status(status: Result<(), String>) {
     if let Err(ref e) = status {
         tracing::warn!("Embedded mpv is not available, the web player is used: {}", e);
@@ -375,21 +392,59 @@ fn emit_status_changed() {
     }
 }
 
-/// Path to load libmpv from. Debug builds take the system library for local testing; release
-/// builds load the LGPL build bundled with the AppImage (`scripts/build-libmpv-lgpl.sh`) and
-/// otherwise the system's (RPM/DEB), which must pass the same LGPL check.
-fn library_path() -> Result<String, String> {
-    // The macOS app keeps the LGPL set (scripts/build-libmpv-lgpl-macos.sh) in Contents/Frameworks.
+/// Path to load libmpv from, and whether it is the LGPL build bundled with the AppImage
+/// (`scripts/build-libmpv-lgpl.sh`). Debug builds and system packages (RPM/DEB/AUR) take the
+/// system library.
+fn library_path() -> Result<(String, bool), String> {
+    // The macOS app keeps the LGPL set (scripts/build-libmpv-lgpl-macos.sh) in Contents/Frameworks;
+    // Anix ships it, so the LGPL check applies.
     #[cfg(target_os = "macos")]
-    return macos_library_path();
+    return macos_library_path().map(|path| (path, true));
     #[allow(unreachable_code, reason = "macOS returns above")]
     if cfg!(debug_assertions) {
-        return Ok("libmpv.so.2".to_string());
+        return Ok(("libmpv.so.2".to_string(), false));
     }
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let dir = exe.parent().ok_or("The app folder is unknown")?;
     let bundled = dir.join("../lib/anix/libmpv.so.2");
-    Ok(if bundled.exists() { bundled.to_string_lossy().into_owned() } else { "libmpv.so.2".to_string() })
+    let in_appimage = std::env::var_os("APPIMAGE").is_some();
+    let is_bundled = libmpv_is_bundled(in_appimage, bundled.exists());
+    Ok(if bundled.exists() {
+        (bundled.to_string_lossy().into_owned(), is_bundled)
+    } else {
+        ("libmpv.so.2".to_string(), is_bundled)
+    })
+}
+
+/// Whether the LGPL-only rule applies: the AppImage's libmpv, or an AppImage that lost its
+/// own (it must never take a system GPL one).
+pub fn libmpv_is_bundled(in_appimage: bool, bundled_file_exists: bool) -> bool {
+    in_appimage || bundled_file_exists
+}
+
+/// Why a libmpv may not be used, or `None`. Only the bundled build must be LGPL (Anix ships
+/// it); a system library is the user's own and is used under its own licence.
+pub fn license_refusal(license: &str, bundled: bool) -> Option<String> {
+    (bundled && is_gpl_license(license)).then(|| {
+        format!("The FFmpeg libmpv uses is not an LGPL build ({}). Using the web player.", license)
+    })
+}
+
+/// The web-player reason shown when no libmpv can be loaded.
+pub fn no_libmpv_message() -> String {
+    no_libmpv_message_for(crate::system::is_flatpak())
+}
+
+/// `no_libmpv_message` for a given packaging: the Flatpak cannot load a system libmpv or start
+/// an external player, so it suggests neither.
+pub fn no_libmpv_message_for(flatpak: bool) -> String {
+    if flatpak {
+        "The embedded player is not available in the Flatpak. Using the web player instead.".to_string()
+    } else {
+        "The embedded player needs the AppImage, or mpv's library (libmpv.so.2) installed on this \
+         system. Using the web player instead. \"Open in mpv\" still works with the system mpv."
+            .to_string()
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -412,22 +467,42 @@ fn read_settings() -> Value {
         .unwrap_or_else(|| json!({}))
 }
 
-/// The "Player engine" setting; settings from before it existed mean embedded mpv.
-fn engine_setting(settings: &Value) -> String {
-    settings.get(SETTING_KEY).and_then(Value::as_str).unwrap_or(default_engine()).to_string()
+/// The "Player engine" setting; with none saved, `default_engine`.
+fn engine_setting(settings: &Value, forced_web: bool) -> String {
+    match settings.get(SETTING_KEY).and_then(Value::as_str) {
+        Some(engine) => engine.to_string(),
+        None => default_engine(
+            forced_web,
+            cfg!(debug_assertions),
+            // The macOS app bundles libmpv like the AppImage does, whenever it was built with it.
+            std::env::var_os("APPIMAGE").is_some() || macos_has_libmpv(),
+            crate::system::is_flatpak(),
+            || load_lib().is_ok(),
+        )
+        .to_string(),
+    }
 }
 
-/// Release RPM/DEB builds have no LGPL libmpv of their own (only the AppImage bundles one), so
-/// they start on the web player instead of announcing a fallback on every run.
-fn default_engine() -> &'static str {
-    // The macOS app bundles libmpv whenever it was built with it.
-    if cfg!(target_os = "macos") {
-        return if macos_has_libmpv() { "mpv" } else { "web" };
-    }
-    if cfg!(debug_assertions) || std::env::var_os("APPIMAGE").is_some() {
-        "mpv"
-    } else {
+/// The engine of an install that never chose one. Debug builds and the AppImage use embedded
+/// mpv; the Flatpak has no libmpv, so the web player. Other release builds (RPM/DEB/AUR) use
+/// mpv only when the system's libmpv loads, else quietly the web player (no notice: nobody
+/// asked for mpv). Forced web (`--web-player`, env, safe mode) is web before anything is probed.
+pub fn default_engine(
+    forced_web: bool,
+    debug: bool,
+    appimage: bool,
+    flatpak: bool,
+    libmpv_loads: impl FnOnce() -> bool,
+) -> &'static str {
+    // A forced web run never probes libmpv: one that crashes on load must be avoidable.
+    if forced_web {
         "web"
+    } else if debug || appimage {
+        "mpv"
+    } else if flatpak || !libmpv_loads() {
+        "web"
+    } else {
+        "mpv"
     }
 }
 
@@ -485,19 +560,24 @@ fn cache_dir() -> Option<PathBuf> {
     Some(dir)
 }
 
-/// libmpv, loaded once and refused when its FFmpeg is not LGPL (release builds).
+/// libmpv, loaded once and refused when it is the bundled one and its FFmpeg is not LGPL
+/// (release builds).
 fn load_lib() -> Result<&'static ffi::Lib, String> {
     static LIB: OnceCell<&'static ffi::Lib> = OnceCell::new();
     LIB.get_or_try_init(|| {
-        let lib: &'static ffi::Lib = Box::leak(Box::new(ffi::Lib::load(&library_path()?)?));
+        let (path, bundled) = library_path()?;
+        let lib = ffi::Lib::load(&path).map_err(|e| {
+            tracing::warn!("{}", e);
+            if bundled { e } else { no_libmpv_message() }
+        })?;
+        let lib: &'static ffi::Lib = Box::leak(Box::new(lib));
         match lib.license() {
-            Some(license) if is_gpl_license(&license) => {
-                if !cfg!(debug_assertions) {
-                    return Err(format!("The FFmpeg libmpv uses is not an LGPL build ({})", license));
+            Some(license) => {
+                if let Some(refusal) = license_refusal(&license, bundled) {
+                    return Err(refusal);
                 }
-                tracing::warn!("libmpv uses a GPL FFmpeg ({}); fine for local testing only", license);
+                tracing::info!("libmpv FFmpeg licence: {}", license);
             }
-            Some(license) => tracing::info!("libmpv FFmpeg licence: {}", license),
             None => tracing::warn!("The FFmpeg licence of libmpv could not be read"),
         }
         Ok(lib)
@@ -518,11 +598,13 @@ fn decision() -> &'static Start {
             CRASH_SWITCH_NOTICE.store(true, Ordering::SeqCst);
         }
         let state = load_state();
-        let mut decision = policy::decide(&engine_setting(&read_settings()), forced, &state);
+        let mut decision = policy::decide(&engine_setting(&read_settings(), forced.is_some()), forced, &state);
         // Checked before WebKit's DMA-BUF renderer is kept on for mpv: a missing or refused
         // libmpv must not cost the blank-window workaround.
         if decision == Start::Mpv {
             if let Err(e) = load_lib() {
+                let bundled = library_path().is_ok_and(|(_, bundled)| bundled);
+                QUIET_FALLBACK.store(quiet_no_libmpv(bundled, crate::system::is_flatpak()), Ordering::SeqCst);
                 decision = Start::Web { reason: Some(e) };
             }
         }
@@ -601,7 +683,7 @@ fn pid_is_anix(pid: u32) -> bool {
 /// Moves the setting to embedded mpv after a crash during web playback, when this build can
 /// run it and that was not done before. Returns whether it switched.
 fn switch_to_mpv_after_crash(forced_web: bool) -> bool {
-    let engine = engine_setting(&read_settings());
+    let engine = engine_setting(&read_settings(), forced_web);
     let state = load_state();
     // libmpv is only loaded when the rest already says yes.
     let candidate = policy::switch_to_mpv_after_crash(&engine, true, forced_web, true, &state);
@@ -1058,6 +1140,8 @@ pub struct EngineStatus {
     pub requested: bool,
     pub available: bool,
     pub error: Option<String>,
+    /// `error` is only the system having no libmpv: not worth a notice.
+    pub quiet: bool,
     /// The page asks "Is the video player showing correctly?" now.
     pub ask_confirm: bool,
     /// Why the web player is used although embedded mpv was chosen before.
@@ -1082,6 +1166,7 @@ pub async fn embedded_mpv_status() -> EngineStatus {
         requested,
         available,
         error,
+        quiet: QUIET_FALLBACK.load(Ordering::SeqCst),
         ask_confirm: available && ASK.load(Ordering::SeqCst),
         reason: state.reason,
         hwdec: HWDEC.lock().unwrap_or_else(|p| p.into_inner()).clone(),

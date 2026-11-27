@@ -905,6 +905,7 @@
   "libraryFormat.formatTvShort": "ТВ (короткое)",
   "libraryFormat.gigabytes": "{size} ГБ",
   "libraryFormat.megabytes": "{size} МБ",
+  "libraryFormat.kilobytes": "{size} КБ",
   "localFilesTab.all": "Все",
   "localFilesTab.changeMatch": "Изменить сопоставление",
   "localFilesTab.chooseAnother": "Выбрать другую папку",
@@ -1634,6 +1635,8 @@
   "settings.couldNotTurnOn": "Не удалось включить {name}",
   "settings.dohAutomatic": "Автоматически",
   "settings.dohHint": "Определять домены провайдеров через зашифрованный резолвер вместо DNS вашего интернет-провайдера. «Автоматически» использует обычный DNS, пока сайт не покажется заблокированным, а затем — резолвер для этого сайта.",
+  "settings.downloadAllSubtitles": "Скачивать субтитры на всех языках",
+  "settings.downloadAllSubtitlesHint": "Выкл.: при загрузке остаются только выбранные вами языки субтитров (если ни один не подошёл, берётся дорожка источника по умолчанию). Вкл.: сохраняются все языки, которые предлагает источник.",
   "settings.downloadingRepo": "Загрузка репозитория и его плагинов…",
   "settings.externalPlayer": "Внешний плеер",
   "settings.externalPlayerHint": "Открывает локальные файлы, готовые загрузки и «Открыть во внешнем плеере». Должен быть установлен.",
@@ -2277,5 +2280,55 @@
   "fastDrawing.reasonSafe": "Выключено: Anix запущен с --safe-graphics.",
   "fastDrawing.changeFailed": "Не удалось изменить быструю отрисовку",
   "fastDrawing.dialogTitle": "Anix выглядит правильно?",
-  "fastDrawing.dialogBody": "Быстрая отрисовка включена. Если окно выглядит правильно и прокручивается плавно, оставьте её. Иначе Anix выключит её и перезапустится."
+  "fastDrawing.dialogBody": "Быстрая отрисовка включена. Если окно выглядит правильно и прокручивается плавно, оставьте её. Иначе Anix выключит её и перезапустится.",
+  "settings.streamingResolution": "Разрешение стрима",
+  "settings.streamingResolutionHint": "Размер картинки, с которого начинается серия. Если в источнике его нет, берётся ближайшее меньшее, затем ближайшее большее.",
+  "settings.resolutionAuto": "Авто",
+  "downloadSettings.downloadResolution": "Разрешение загрузок",
+  "downloadSettings.downloadResolutionHint": "Размер картинки, с которого начинаются загрузки. Если в источнике его нет, берётся ближайшее меньшее, затем ближайшее большее.",
+  "settings.defaultPlaybackSpeed": "Скорость воспроизведения по умолчанию",
+  "settings.defaultPlaybackSpeedHint": "Каждая серия начинается с этой скорости (от 0,5× до 4×). Скорость, изменённая во время просмотра, действует только для этой серии.",
+  "playerSettingsPanel.customSpeed": "Своя",
+  "downloadSettings.parallel": "Одновременные загрузки",
+  "downloadSettings.parallelHint": "Сколько серий загружается одновременно. Одна — самый щадящий вариант для сервера.",
+  "downloadSettings.speedLimit": "Ограничение скорости",
+  "downloadSettings.speedLimitHint": "Ограничивает суммарную скорость всех загрузок.",
+  "downloadSettings.speedLimitOff": "Выкл.",
+  "downloads.speed": "{speed}/с",
+  "downloads.speedLeft": "{speed}/с · осталось {time}",
+  "discover.studio": "Студия",
+  "discover.studioPlaceholder": "напр. MAPPA",
+  "smartCollection.studio": "Студия: {name}",
+  "smartCollection.franchise": "Франшиза в порядке просмотра",
+  "franchise.partial": "Некоторые части этой франшизы пока неизвестны. Порядок дополнится, когда каталог станет доступен.",
+  "franchise.unavailable": "Порядок просмотра нельзя прочитать, пока ни один каталог недоступен.",
+  "offline.savedPage": "Сохранённая страница из {source}, {age}",
+  "offline.savedPageNoSource": "Сохранённая страница, {age}",
+  "offline.ageNow": "только что",
+  "offline.ageMinutes": {
+    "one": "{count} минуту назад",
+    "few": "{count} минуты назад",
+    "many": "{count} минут назад",
+    "other": "{count} минуты назад"
+  },
+  "offline.ageHours": {
+    "one": "{count} час назад",
+    "few": "{count} часа назад",
+    "many": "{count} часов назад",
+    "other": "{count} часа назад"
+  },
+  "offline.ageDays": {
+    "one": "{count} день назад",
+    "few": "{count} дня назад",
+    "many": "{count} дней назад",
+    "other": "{count} дня назад"
+  },
+  "offline.changesWaiting": {
+    "one": "{count} изменение списка будет отправлено, когда вы выйдете в сеть",
+    "few": "{count} изменения списка будут отправлены, когда вы выйдете в сеть",
+    "many": "{count} изменений списка будут отправлены, когда вы выйдете в сеть",
+    "other": "{count} изменения списка будут отправлены, когда вы выйдете в сеть"
+  },
+  "settings.imageCacheLimit": "Сохранённые обложки и баннеры",
+  "settings.imageCacheLimitHint": "Сколько места на диске могут занимать картинки, чтобы оставаться видимыми офлайн. Самые старые удаляются первыми. Сейчас занято:"
 }

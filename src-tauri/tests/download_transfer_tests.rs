@@ -260,6 +260,36 @@ fn make_hls(dir: &Path) -> Option<HashMap<String, Vec<u8>>> {
     files.contains_key("index.m3u8").then_some(files)
 }
 
+/// An HLS stream whose segments are AES-128 encrypted, with the key served as `enc.key`.
+fn make_encrypted_hls(dir: &Path) -> Option<HashMap<String, Vec<u8>>> {
+    std::fs::write(dir.join("enc.key"), [7u8; 16]).ok()?;
+    std::fs::write(dir.join("enc.keyinfo"), "enc.key\nenc.key\n00112233445566778899aabbccddeeff\n").ok()?;
+    let status = std::process::Command::new("ffmpeg")
+        .current_dir(dir)
+        .args([
+            "-hide_banner", "-loglevel", "error", "-y",
+            "-f", "lavfi", "-i", "testsrc=duration=4:size=160x120:rate=10",
+            "-f", "lavfi", "-i", "sine=frequency=440:duration=4",
+            "-c:v", "mpeg2video", "-c:a", "mp2",
+            "-f", "hls", "-hls_time", "2", "-hls_playlist_type", "vod",
+            "-hls_key_info_file", "enc.keyinfo",
+            "-hls_segment_filename", "seg%d.jpg", "index.m3u8",
+        ])
+        .status()
+        .ok()?;
+    if !status.success() {
+        return None;
+    }
+    let mut files = HashMap::new();
+    for entry in std::fs::read_dir(dir).ok()?.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name != "enc.keyinfo" {
+            files.insert(name, std::fs::read(entry.path()).ok()?);
+        }
+    }
+    (files.contains_key("index.m3u8") && files.contains_key("seg0.jpg")).then_some(files)
+}
+
 /// The stream lines ffmpeg reports for `file` ("Video: ...", "Subtitle: ...").
 fn stream_kinds(file: &Path) -> String {
     let output = std::process::Command::new("ffmpeg")
@@ -277,6 +307,45 @@ fn stream_kinds(file: &Path) -> String {
 // ---------------------------------------------------------------------------------------
 // Direct files
 // ---------------------------------------------------------------------------------------
+
+#[tokio::test]
+async fn a_direct_file_from_a_lower_stream_is_named_and_stored_with_the_height_it_has() {
+    // A retry (or the closest-lower rule) may use a 360p stream for a row that asked for 720p.
+    let body: Vec<u8> = (0..300_000u32).map(|i| (i % 251) as u8).collect();
+    let served = body.clone();
+    let (base, _seen) = serve(move |_| Response::ok("video/mp4", served.clone())).await;
+
+    let tmp = TempDir::new("direct-lower");
+    let rec = record("direct-lower");
+    let pool = db_with(&rec).await;
+    let mut src = source(format!("{}/video/ep3.mp4", base));
+    src.height = Some(360);
+
+    let outcome = downloads::download_into(&pool, &rec, src, tmp.path()).await;
+
+    let expected_path = tmp.path().join("Test Show - EP 03 [SUB 360p].mp4");
+    assert_eq!(outcome, DownloadOutcome::Completed { path: expected_path, size: body.len() as i64 });
+    assert_eq!(row(&pool, "direct-lower").await.quality, "360p", "the row says what was saved");
+}
+
+#[tokio::test]
+async fn a_direct_file_at_the_asked_height_keeps_the_asked_quality() {
+    let body: Vec<u8> = (0..300_000u32).map(|i| (i % 251) as u8).collect();
+    let served = body.clone();
+    let (base, _seen) = serve(move |_| Response::ok("video/mp4", served.clone())).await;
+
+    let tmp = TempDir::new("direct-same");
+    let rec = record("direct-same");
+    let pool = db_with(&rec).await;
+    let mut src = source(format!("{}/video/ep3.mp4", base));
+    src.height = Some(720);
+
+    let outcome = downloads::download_into(&pool, &rec, src, tmp.path()).await;
+
+    let expected_path = tmp.path().join("Test Show - EP 03 [SUB 720p].mp4");
+    assert_eq!(outcome, DownloadOutcome::Completed { path: expected_path, size: body.len() as i64 });
+    assert_eq!(row(&pool, "direct-same").await.quality, "720p");
+}
 
 #[tokio::test]
 async fn direct_file_is_saved_completely_and_marked_completed() {
@@ -532,7 +601,14 @@ async fn hls_failure_marks_the_row_failed_and_never_saves_the_playlist() {
         assert_eq!(stored.status, "FAILED");
         assert_eq!(stored.error_msg.as_deref(), Some(message.as_str()));
         assert_eq!(stored.file_path, None);
-        assert!(tmp.file_names().is_empty(), "{}: nothing may be left on disk: {:?}", id, tmp.file_names());
+        // A refused segment may only be an expired link, so the segment folder is kept for
+        // Try again; nothing else (no playlist, no video) is left.
+        assert!(
+            tmp.file_names().iter().all(|n| n.ends_with(".hls.anix-part")),
+            "{}: only the kept segment folder may be left on disk: {:?}",
+            id,
+            tmp.file_names()
+        );
     }
 }
 
@@ -597,6 +673,8 @@ async fn hls_stream_is_muxed_with_headers_and_survives_a_bad_subtitle() {
             subtitle("/subs/es.srt", "Spanish", false),
         ],
         language: None,
+        subtitle_languages: None,
+        height: None,
     };
 
     let outcome = downloads::download_into(&pool, &rec, src, tmp.path()).await;
@@ -616,7 +694,11 @@ async fn hls_stream_is_muxed_with_headers_and_survives_a_bad_subtitle() {
     assert!(kinds.contains("Subtitle:"), "{}", kinds);
     assert_eq!(
         tmp.file_names(),
-        vec!["Test Show - EP 03 [SUB 720p].mkv", "Test Show - EP 03 [SUB 720p].spanish.srt"]
+        vec![
+            "Test Show - EP 03 [SUB 720p].english.vtt",
+            "Test Show - EP 03 [SUB 720p].mkv",
+            "Test Show - EP 03 [SUB 720p].spanish.srt"
+        ]
     );
 
     let stored = row(&pool, "hls-ok").await;
@@ -988,12 +1070,15 @@ fn only_network_failures_keep_what_was_fetched_for_a_retry() {
         "A segment of the stream could not be fetched: HTTP 503 Service Unavailable.",
         "The stream host answered HTTP 502 Bad Gateway.",
         "The stream host answered HTTP 429 Too Many Requests.",
+        // A refused request keeps the saved segments: the link may only have expired.
+        "A segment of the stream could not be fetched: HTTP 403 Forbidden.",
+        "The stream host answered HTTP 404 Not Found.",
+        "The stream link expired and could not be renewed: the new stream could not be read",
+        "The renewed stream is not the same as the one being downloaded.",
     ] {
         assert!(downloads::keeps_partial_files_after(kept), "kept: {}", kept);
     }
     for dropped in [
-        "A segment of the stream could not be fetched: HTTP 403 Forbidden.",
-        "The stream host answered HTTP 404 Not Found.",
         "The stream host returned a web page instead of a video.",
         "Could not write to /x/a.download.anix-part: No space left on device (os error 28)",
         "Could not create /x/a.hls.anix-part: Permission denied (os error 13)",
@@ -1011,8 +1096,9 @@ async fn try_again_after_a_network_failure_resumes_where_it_stopped() {
     let served = body.clone();
     let first = Arc::new(AtomicU32::new(0));
     let (base, seen) = serve(move |req| {
-        if first.fetch_add(1, Ordering::SeqCst) == 0 {
-            // The first try gets 120 kB, then the connection closes early.
+        if first.fetch_add(1, Ordering::SeqCst) < 4 {
+            // Every try of the first run (the engine tries four times) gets 120 kB, then the
+            // connection closes early.
             return Response { announced_len: Some(served.len()), ..Response::ok("video/mp4", served[..120_000].to_vec()) };
         }
         ranged(req, &served)
@@ -1034,8 +1120,8 @@ async fn try_again_after_a_network_failure_resumes_where_it_stopped() {
     assert_eq!(std::fs::read(tmp.path().join("Test Show - EP 03 [SUB 720p].mp4")).unwrap(), body);
     assert_eq!(tmp.file_names(), vec!["Test Show - EP 03 [SUB 720p].mp4"], "the kept files are gone after success");
     let seen = seen.lock().unwrap();
-    assert_eq!(seen.len(), 2);
-    assert_eq!(seen[1].header("range"), Some("bytes=120000-"), "only the missing part is fetched again");
+    assert_eq!(seen.len(), 5);
+    assert_eq!(seen[4].header("range"), Some("bytes=120000-"), "only the missing part is fetched again");
 }
 
 #[tokio::test]
@@ -1053,7 +1139,8 @@ async fn an_hls_download_that_failed_on_a_segment_keeps_the_others_for_try_again
     let refused_once = Arc::new(AtomicU32::new(0));
     let (base, seen) = serve(move |req| {
         let name = req.path.trim_start_matches("/hls/");
-        if name == "seg1.jpg" && refused_once.fetch_add(1, Ordering::SeqCst) == 0 {
+        // Refused on every try of the first run (the engine tries four times).
+        if name == "seg1.jpg" && refused_once.fetch_add(1, Ordering::SeqCst) < 4 {
             return Response::status(503);
         }
         match files.get(name) {
@@ -1080,6 +1167,105 @@ async fn an_hls_download_that_failed_on_a_segment_keeps_the_others_for_try_again
     assert_eq!(tmp.file_names(), vec!["Test Show - EP 03 [SUB 720p].mkv"], "the segment folder is gone after success");
     let seen = seen.lock().unwrap();
     assert_eq!(seen.iter().filter(|r| r.path == "/hls/seg0.jpg").count(), 1, "seg0 is fetched once");
+}
+
+#[test]
+fn ffmpeg_failures_that_are_the_network_are_told_apart_from_bad_streams() {
+    for network in [
+        "Server returned 503 Service Unavailable",
+        "Connection reset by peer | Error in the pull function.",
+        "Connection timed out",
+        "Input/output error",
+    ] {
+        assert!(downloads::ffmpeg_network_failure(network), "{}", network);
+    }
+    for bad in ["Server returned 404 Not Found", "Invalid data found when processing input", "Server returned 403 Forbidden"] {
+        assert!(!downloads::ffmpeg_network_failure(bad), "{}", bad);
+    }
+}
+
+#[test]
+fn a_renewed_stream_must_have_the_same_segments_and_keys() {
+    let plan = |text: &str| downloads::plan_hls_download(text, "https://cdn.example/a/i.m3u8").unwrap().playlist;
+    let saved = plan("#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"k\",IV=0x01\n#EXTINF:2,\na.ts\n#EXTINF:2,\nb.ts\n#EXT-X-ENDLIST\n");
+    let moved = plan("#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"k2?t=9\",IV=0x01\n#EXTINF:2.1,\nc.ts\n#EXTINF:2,\nd.ts\n#EXT-X-ENDLIST\n");
+    assert!(downloads::same_hls_shape(&saved, &moved), "new addresses and tokens are fine");
+    let shorter = plan("#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"k\",IV=0x01\n#EXTINF:2,\na.ts\n#EXT-X-ENDLIST\n");
+    assert!(!downloads::same_hls_shape(&saved, &shorter));
+    let other_iv = plan("#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"k\",IV=0x02\n#EXTINF:2,\na.ts\n#EXTINF:2,\nb.ts\n#EXT-X-ENDLIST\n");
+    assert!(!downloads::same_hls_shape(&saved, &other_iv));
+    let plain = plan("#EXTM3U\n#EXTINF:2,\na.ts\n#EXTINF:2,\nb.ts\n#EXT-X-ENDLIST\n");
+    assert!(!downloads::same_hls_shape(&saved, &plain), "a stream without the key is another stream");
+}
+
+#[test]
+fn only_segments_after_an_aes_key_are_planned_as_encrypted() {
+    let text = "#EXTM3U\n#EXTINF:2,\nclear.ts\n#EXT-X-KEY:METHOD=AES-128,URI=\"k\"\n#EXTINF:2,\nsealed.ts\n\
+                #EXT-X-KEY:METHOD=NONE\n#EXTINF:2,\nclear2.ts\n#EXT-X-ENDLIST\n";
+    let plan = downloads::plan_hls_download(text, "https://cdn.example/a/i.m3u8").unwrap();
+    assert_eq!(plan.encrypted, vec![false, false, true, false], "{:?}", plan.files);
+}
+
+#[tokio::test]
+async fn an_aes_encrypted_hls_download_is_fetched_verified_and_muxed() {
+    if !ffmpeg_available() {
+        eprintln!("skipped: ffmpeg is not installed");
+        return;
+    }
+    let media = TempDir::new("hls-aes-media");
+    let Some(files) = make_encrypted_hls(media.path()) else {
+        eprintln!("skipped: this ffmpeg cannot generate an encrypted stream");
+        return;
+    };
+    assert!(downloads::engine::check_segment(&files["seg0.jpg"], None, None).is_err(), "the fixture is ciphertext, not video");
+    let (base, _seen) = serve(move |req| match files.get(req.path.trim_start_matches("/hls/")) {
+        Some(body) => Response::ok("application/octet-stream", body.clone()),
+        None => Response::status(404),
+    })
+    .await;
+    let tmp = TempDir::new("hls-aes");
+    let rec = record("hls-aes");
+    let pool = db_with(&rec).await;
+
+    let outcome = downloads::download_into(&pool, &rec, source(format!("{}/hls/index.m3u8", base)), tmp.path()).await;
+
+    let DownloadOutcome::Completed { path, .. } = outcome else { panic!("{:?}", outcome) };
+    assert!(stream_kinds(&path).contains("Video:"));
+}
+
+#[tokio::test]
+async fn a_playlist_that_answers_503_once_is_retried_so_the_segments_are_still_fetched_by_the_app() {
+    if !ffmpeg_available() {
+        eprintln!("skipped: ffmpeg is not installed");
+        return;
+    }
+    let media = TempDir::new("hls-playlist-retry-media");
+    let Some(files) = make_hls(media.path()) else {
+        eprintln!("skipped: this ffmpeg cannot generate the test stream");
+        return;
+    };
+    let first = Arc::new(AtomicU32::new(0));
+    let (base, seen) = serve(move |req| {
+        let name = req.path.trim_start_matches("/hls/");
+        if name == "index.m3u8" && first.fetch_add(1, Ordering::SeqCst) == 0 {
+            return Response::status(503);
+        }
+        match files.get(name) {
+            Some(body) => Response::ok("application/octet-stream", body.clone()),
+            None => Response::status(404),
+        }
+    })
+    .await;
+    let tmp = TempDir::new("hls-playlist-retry");
+    let rec = record("hls-playlist-retry");
+    let pool = db_with(&rec).await;
+
+    let outcome = downloads::download_into(&pool, &rec, source(format!("{}/hls/index.m3u8", base)), tmp.path()).await;
+
+    assert!(matches!(outcome, DownloadOutcome::Completed { .. }), "{:?}", outcome);
+    let seen = seen.lock().unwrap();
+    let playlists = seen.iter().filter(|r| r.path == "/hls/index.m3u8").count();
+    assert_eq!(playlists, 2, "one refusal, one retry, and ffmpeg never needed to read it");
 }
 
 #[test]
@@ -1296,4 +1482,31 @@ async fn an_oversized_subtitle_without_a_length_is_cut_off_and_the_video_still_d
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     panic!("the whole oversized subtitle was read");
+}
+
+#[test]
+fn an_init_section_after_an_aes_key_is_encrypted_and_the_key_is_not() {
+    let text = "#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"k\"\n#EXT-X-MAP:URI=\"init.mp4\"\n#EXTINF:2,\na.m4s\n#EXT-X-ENDLIST\n";
+    let plan = downloads::plan_hls_download(text, "https://cdn.example/a/i.m3u8").unwrap();
+    assert_eq!(plan.encrypted, vec![false, true, true], "{:?}", plan.files);
+}
+
+#[test]
+fn a_renewed_stream_with_another_media_sequence_is_another_stream() {
+    let plan = |seq: u32| {
+        let text = format!("#EXTM3U\n#EXT-X-MEDIA-SEQUENCE:{}\n#EXT-X-KEY:METHOD=AES-128,URI=\"k\"\n#EXTINF:2,\na.ts\n#EXT-X-ENDLIST\n", seq);
+        downloads::plan_hls_download(&text, "https://cdn.example/a/i.m3u8").unwrap().playlist
+    };
+    assert!(downloads::same_hls_shape(&plan(5), &plan(5)));
+    assert!(!downloads::same_hls_shape(&plan(5), &plan(6)));
+}
+
+#[test]
+fn a_stream_the_player_picked_is_used_only_while_it_is_fresh() {
+    let now = std::time::Instant::now();
+    downloads::queue_with_source_at("fresh-src", source("https://cdn.example/a.m3u8".into()), now);
+    downloads::queue_with_source_at("stale-src", source("https://cdn.example/b.m3u8".into()), now - std::time::Duration::from_secs(10 * 60));
+    assert_eq!(downloads::take_queued_source("fresh-src").map(|s| s.url), Some("https://cdn.example/a.m3u8".to_string()));
+    assert!(downloads::take_queued_source("stale-src").is_none(), "its signed link may have expired");
+    assert!(downloads::take_queued_source("fresh-src").is_none(), "taken once");
 }

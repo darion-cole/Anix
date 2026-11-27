@@ -3,6 +3,8 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { ArrowLeft, Play, DownloadCloud, Video, SearchX, HardDrive, Image as ImageIcon } from 'lucide-react';
 import { ShimmerImage } from '../components/ShimmerImage';
+import { SavedImg } from '../components/SavedImg';
+import { SavedNote } from '../components/SavedNote';
 import { EpisodeBrowser } from '../components/EpisodeBrowser';
 import { AmbientGlow, hexToChannels } from '../components/AmbientGlow';
 import { DetailStickyBar, ListStatusSelect } from '../components/DetailStickyBar';
@@ -45,6 +47,7 @@ import { parseAnimeId } from '../lib/routes';
 import { detailScores } from '../lib/scores';
 import type { AnimeDetails, EpisodeItem as EpisodeItemType, FuzzyDate, Media } from '../types';
 import { formatNumber, locale, t, type TKey } from '../i18n';
+import { playsFromFile } from '../lib/playSource';
 
 function sentenceCase(value: string): string {
   const lower = value.replace(/_/g, ' ').toLowerCase();
@@ -433,10 +436,13 @@ const DetailContent: React.FC<{ id: string | undefined }> = ({ id }) => {
   const handlePlay = () => {
     const episode = continueTarget?.episode ?? firstEpisode;
     const provider = continueTarget ? historyProvider ?? AUTO_PROVIDER : defaultProvider;
-    // An episode with a file of the user's plays from it unless a streaming plugin was chosen.
-    const fromFile =
-      local.hasEpisode(episode) &&
-      (provider === AUTO_PROVIDER || continueTarget?.provider === LOCAL_PROVIDER || providers.none);
+    // An episode with a file plays from it; Continue and a remembered or preferred server too.
+    const fromFile = playsFromFile({
+      hasLocalFile: local.hasEpisode(episode),
+      explicitProvider: null,
+      rememberedProvider: provider,
+      preferredProvider: settings?.preferred_provider,
+    });
     navigate(
       watchPath(
         anilistId,
@@ -548,11 +554,11 @@ const DetailContent: React.FC<{ id: string | undefined }> = ({ id }) => {
         )}
         {bannerImage && (
           <div aria-hidden="true" className="absolute inset-x-0 top-0 -z-10 h-72">
-            <img
+            <SavedImg
               src={bannerImage}
               alt=""
               draggable={false}
-              onError={() => setBannerFailed(true)}
+              onFailed={() => setBannerFailed(true)}
               className="ui-detail-banner h-full w-full object-cover object-center"
             />
           </div>
@@ -583,6 +589,7 @@ const DetailContent: React.FC<{ id: string | undefined }> = ({ id }) => {
               <h1 className="text-[clamp(1.6rem,3vw,2.6rem)] font-black leading-tight tracking-[-0.02em] text-text-primary select-text">
                 <bdi>{title}</bdi>
               </h1>
+              <SavedNote kind="details" id={details.id} />
               {/* Read right after the title; drawn in the header's corner (the header is its positioned box). */}
               {finished && (
                 <div className="ui-detail-stamp pointer-events-none absolute end-[clamp(1.5rem,4vw,3rem)] top-6 z-10">

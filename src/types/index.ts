@@ -279,6 +279,8 @@ export interface WatchlistEntry {
   status: ListStatusValue;
   /** False while a status chosen here waits to be sent to the connected lists. */
   synced: boolean;
+  /** Episode count saved with the entry; null until a source has told it. */
+  episodes: number | null;
 }
 
 /** A watchlist status, in AniList vocabulary. */
@@ -359,6 +361,13 @@ export interface NotificationPreference {
 }
 
 export type DownloadStatus = 'QUEUED' | 'DOWNLOADING' | 'COMPLETED' | 'FAILED';
+
+/** Live speed of a running download; not stored. */
+export interface DownloadSpeed {
+  speed_bps: number;
+  /** Seconds left, when known. */
+  eta_s: number | null;
+}
 
 export interface DownloadRecord {
   id: string;
@@ -466,7 +475,17 @@ export interface AppSettings {
   doh_provider: DohProvider;
   catalogue_source: CatalogueSource;
   download_quality: string;
+  /** 'auto' or a height ('1080', '720', '480', '360'): the stream an episode starts on. */
+  streaming_resolution: string;
+  /** Every episode starts at this speed (0.5 to 4). */
+  default_playback_speed: number;
   download_dir: string;
+  /** Downloads save every subtitle language the source offers, not only the preferred ones. */
+  download_all_subtitles: boolean;
+  /** Episodes that download at once (1 to 3). */
+  max_parallel_downloads: number;
+  /** Combined speed limit of all downloads in KiB/s (1024 bytes, despite the key's name); 0 is off. */
+  download_speed_limit_kbps: number;
   /** A built-in theme id (see `theme/themes.ts`). */
   theme: ThemeId;
   /** Closing the window hides it in the tray instead of quitting. */
@@ -505,6 +524,8 @@ export interface AppSettings {
   /** Embedded mpv keeps its cache on disk (in the app's cache folder), up to `player_disk_cache_mb`. */
   player_disk_cache: boolean;
   player_disk_cache_mb: number;
+  /** Covers and banners saved on disk for offline use, up to this many MB (oldest dropped first). */
+  image_cache_mb: number;
   /** Home row ids in the order chosen in Settings › Appearance; rows missing here follow. */
   home_row_order?: string[];
   /** Home rows (built-in or added) that are kept but not shown. */

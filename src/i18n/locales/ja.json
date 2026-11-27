@@ -839,6 +839,7 @@
   "libraryFormat.formatTvShort": "TV ショート",
   "libraryFormat.gigabytes": "{size} GB",
   "libraryFormat.megabytes": "{size} MB",
+  "libraryFormat.kilobytes": "{size} KB",
   "localFilesTab.all": "すべて",
   "localFilesTab.changeMatch": "照合を変更",
   "localFilesTab.chooseAnother": "別のフォルダーを選ぶ",
@@ -1463,6 +1464,8 @@
   "settings.couldNotTurnOn": "{name}をオンにできませんでした",
   "settings.dohAutomatic": "自動",
   "settings.dohHint": "プロバイダーのドメインを、ISP の DNS ではなく暗号化されたリゾルバーで名前解決します。「自動」では、サイトがブロックされているようなときだけ、そのサイトにリゾルバーを使い、それ以外は通常の DNS を使います。",
+  "settings.downloadAllSubtitles": "すべての字幕言語をダウンロード",
+  "settings.downloadAllSubtitlesHint": "オフ: ダウンロードには設定した字幕言語だけを残します(一致しない場合はソースの既定の字幕)。オン: ソースが提供するすべての言語を保存します。",
   "settings.downloadingRepo": "リポジトリとそのプラグインをダウンロード中…",
   "settings.externalPlayer": "外部プレーヤー",
   "settings.externalPlayerHint": "ローカルファイル、完了したダウンロード、「外部プレーヤーで開く」で使います。インストールされている必要があります。",
@@ -2025,5 +2028,43 @@
   "fastDrawing.reasonSafe": "オフになりました: Anix が --safe-graphics 付きで起動されました。",
   "fastDrawing.changeFailed": "高速描画を変更できませんでした",
   "fastDrawing.dialogTitle": "Anix は正しく表示されていますか？",
-  "fastDrawing.dialogBody": "高速描画がオンになりました。このウィンドウが正しく表示され、滑らかにスクロールするなら維持してください。そうでなければ Anix はオフにして再起動します。"
+  "fastDrawing.dialogBody": "高速描画がオンになりました。このウィンドウが正しく表示され、滑らかにスクロールするなら維持してください。そうでなければ Anix はオフにして再起動します。",
+  "settings.streamingResolution": "ストリーミング解像度",
+  "settings.streamingResolutionHint": "エピソードの再生を始める画質です。ソースにない場合は、近い低い解像度、次に近い高い解像度を使います。",
+  "settings.resolutionAuto": "自動",
+  "downloadSettings.downloadResolution": "ダウンロード解像度",
+  "downloadSettings.downloadResolutionHint": "ダウンロードで使う画質です。ソースにない場合は、近い低い解像度、次に近い高い解像度を使います。",
+  "settings.defaultPlaybackSpeed": "デフォルトの再生速度",
+  "settings.defaultPlaybackSpeedHint": "すべてのエピソードはこの速度で始まります（0.5倍〜4倍）。視聴中に変えた速度は、そのエピソードだけに適用されます。",
+  "playerSettingsPanel.customSpeed": "カスタム",
+  "downloadSettings.parallel": "同時ダウンロード数",
+  "downloadSettings.parallelHint": "同時にダウンロードするエピソード数。1つがサーバーに最も優しい設定です。",
+  "downloadSettings.speedLimit": "速度制限",
+  "downloadSettings.speedLimitHint": "すべてのダウンロードの合計速度を制限します。",
+  "downloadSettings.speedLimitOff": "オフ",
+  "downloads.speed": "{speed}/秒",
+  "downloads.speedLeft": "{speed}/秒 · 残り {time}",
+  "discover.studio": "スタジオ",
+  "discover.studioPlaceholder": "例: MAPPA",
+  "smartCollection.studio": "スタジオ: {name}",
+  "smartCollection.franchise": "視聴順のシリーズ",
+  "franchise.partial": "このシリーズにはまだ分かっていない作品があります。カタログに接続できると順番が補われます。",
+  "franchise.unavailable": "カタログに接続できないため、視聴順を読み込めません。",
+  "offline.savedPage": "{source}から保存したページ（{age}）",
+  "offline.savedPageNoSource": "保存したページ（{age}）",
+  "offline.ageNow": "たった今",
+  "offline.ageMinutes": {
+    "other": "{count}分前"
+  },
+  "offline.ageHours": {
+    "other": "{count}時間前"
+  },
+  "offline.ageDays": {
+    "other": "{count}日前"
+  },
+  "offline.changesWaiting": {
+    "other": "リストの変更{count}件は、オンラインになると送信されます"
+  },
+  "settings.imageCacheLimit": "保存したカバーとバナー",
+  "settings.imageCacheLimitHint": "オフラインでも表示できるよう、画像が使えるディスク容量です。古いものから削除されます。現在の使用量:"
 }

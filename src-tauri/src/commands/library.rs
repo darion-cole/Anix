@@ -101,6 +101,7 @@ pub async fn add_to_watchlist(
     cover: Option<String>,
     format: Option<String>,
     average_score: Option<i32>,
+    episodes: Option<i32>,
 ) -> Result<(), String> {
     db::add_to_watchlist(
         &state.pool,
@@ -112,6 +113,9 @@ pub async fn add_to_watchlist(
     )
     .await
     .map_err(|e| e.to_string())?;
+    if let Err(e) = db::set_watchlist_episodes(&state.pool, anilist_id, episodes).await {
+        tracing::warn!("could not save the episode count of anime {}: {}", anilist_id, e);
+    }
     accounts::watchlist_added(&app, &state, anilist_id).await;
     Ok(())
 }

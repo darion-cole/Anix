@@ -22,7 +22,12 @@ export const DEFAULT_SETTINGS: AppSettings = {
   doh_provider: 'cloudflare',
   catalogue_source: 'auto',
   download_quality: 'best',
+  streaming_resolution: 'auto',
+  default_playback_speed: 1,
   download_dir: '',
+  download_all_subtitles: false,
+  max_parallel_downloads: 1,
+  download_speed_limit_kbps: 0,
   theme: DEFAULT_THEME,
   minimize_to_tray: false,
   start_with_desktop: false,
@@ -42,6 +47,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   player_readahead_secs: 30,
   player_disk_cache: false,
   player_disk_cache_mb: 1024,
+  // 1.4.2: saved covers and banners, in MB (oldest dropped first)
+  image_cache_mb: 200,
 };
 
 /** Stands for "no specific provider" wherever a provider key (a plugin id) is expected. */

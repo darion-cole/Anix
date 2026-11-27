@@ -11,6 +11,8 @@ const VAINFO_TIMEOUT: Duration = Duration::from_secs(6);
 
 /// 0 = not recorded, 1 = the app set `WEBKIT_DISABLE_DMABUF_RENDERER`, 2 = it was already set.
 static DMABUF_SET_BY: AtomicU8 = AtomicU8::new(0);
+/// Anix set the variable because this run is in safe mode (the report says so in its tip).
+static DMABUF_BY_SAFE_MODE: AtomicBool = AtomicBool::new(false);
 
 /// Called from `main` before the webview starts: whether the app set the variable itself.
 pub fn note_dmabuf_workaround(set_by_app: bool) {
@@ -22,6 +24,17 @@ const DMABUF_VAR: &str = "WEBKIT_DISABLE_DMABUF_RENDERER";
 /// the environment, and without the mark the new run took Anix's value for the user's and so
 /// refused embedded mpv after "Restart now".
 const DMABUF_MARK: &str = "ANIX_DMABUF_SET_BY_APP";
+
+/// An environment value as text. A non-UTF-8 value turns lossy, so it is never "1" and counts as
+/// the user's own (`var().ok()` read it as unset and let Anix overwrite it).
+pub fn env_text(value: Option<&std::ffi::OsStr>) -> Option<String> {
+    value.map(|v| v.to_string_lossy().into_owned())
+}
+
+/// [`env_text`] of the variable `name`.
+pub fn env_lossy(name: &str) -> Option<String> {
+    env_text(std::env::var_os(name).as_deref())
+}
 
 /// What `main` does with `WEBKIT_DISABLE_DMABUF_RENDERER` before WebKit starts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,8 +67,8 @@ pub fn dmabuf_env(value: Option<&str>, mark: Option<&str>, keep_on: bool) -> Dma
 
 /// The user turned WebKit's DMA-BUF renderer off themselves, which embedded mpv cannot run with.
 pub fn dmabuf_turned_off_by_user() -> bool {
-    let value = std::env::var(DMABUF_VAR).ok();
-    let mark = std::env::var(DMABUF_MARK).ok();
+    let value = env_lossy(DMABUF_VAR);
+    let mark = env_lossy(DMABUF_MARK);
     dmabuf_off_by_user(value.as_deref(), mark.as_deref())
 }
 
@@ -103,6 +116,14 @@ pub fn renderer_plan(gpu: Gpu, wants_mpv: bool, fast_drawing: bool) -> (bool, bo
     (keep_on, gpu.nvidia && keep_on)
 }
 
+/// [`renderer_plan`] plus safe mode: (keep on, force, off only because of safe mode). Safe mode turns
+/// the renderer off as the milder first step (compositing follows from the third crash), and never
+/// forces it. The last value is false where a normal start keeps it off too, so the tip stays true.
+pub fn plan(safe_mode: bool, gpu: Gpu, wants_mpv: bool, fast_drawing: bool) -> (bool, bool, bool) {
+    let normal = renderer_plan(gpu, wants_mpv, fast_drawing);
+    if safe_mode { (false, false, normal.0) } else { (normal.0, normal.1, false) }
+}
+
 /// Whether OpenGL ES loads, the way WebKit loads it.
 fn gles_loadable() -> bool {
     let name = c"libGLESv2.so.2";
@@ -145,14 +166,14 @@ pub fn dmabuf_forced_by_app() -> bool {
 /// renderer; the web player turns it off on NVIDIA's driver (unless the user turned fast drawing
 /// on) and without OpenGL ES (see [`renderer_plan`]).
 pub fn apply_dmabuf_workaround(wants_mpv: bool, fast_drawing: bool) {
-    let (keep_on, force) = renderer_plan(Gpu::detect(), wants_mpv, fast_drawing);
-    let value = std::env::var(DMABUF_VAR).ok();
-    let mark = std::env::var(DMABUF_MARK).ok();
+    let (keep_on, force, by_safe_mode) = plan(super::safe_mode::active(), Gpu::detect(), wants_mpv, fast_drawing);
+    let value = env_lossy(DMABUF_VAR);
+    let mark = env_lossy(DMABUF_MARK);
     let dmabuf = dmabuf_env(value.as_deref(), mark.as_deref(), keep_on);
     // A user who set the off switch themselves gets no forcing either.
     let force = force && dmabuf != DmabufEnv::User;
-    let forced = std::env::var(FORCE_VAR).ok();
-    let forced_mark = std::env::var(FORCE_MARK).ok();
+    let forced = env_lossy(FORCE_VAR);
+    let forced_mark = env_lossy(FORCE_MARK);
     match force_env(forced.as_deref(), forced_mark.as_deref(), force) {
         ForceEnv::Set => {
             std::env::set_var(FORCE_VAR, "1");
@@ -171,6 +192,7 @@ pub fn apply_dmabuf_workaround(wants_mpv: bool, fast_drawing: bool) {
             std::env::set_var(DMABUF_VAR, "1");
             std::env::set_var(DMABUF_MARK, "1");
             note_dmabuf_workaround(true);
+            DMABUF_BY_SAFE_MODE.store(by_safe_mode, Ordering::SeqCst);
         }
         DmabufEnv::Clear => {
             std::env::remove_var(DMABUF_VAR);
@@ -275,6 +297,8 @@ pub struct HardwareReport {
     pub dmabuf_value: Option<String>,
     /// The app set the workaround itself (rather than the environment it was started from).
     pub dmabuf_set_by_app: bool,
+    /// ...because Anix started in safe mode.
+    pub dmabuf_safe_mode: bool,
     /// `intel`, `amd`, `nvidia`, another PCI vendor id, or none when no render node exists.
     pub gpu_vendor: Option<String>,
     pub render_node: Option<String>,
@@ -526,7 +550,9 @@ pub fn tips(report: &HardwareReport) -> Vec<String> {
         tips.push("GStreamer's libav plugin (software decoders) was not found; some videos may not play. Install gstreamer1-libav or gstreamer1.0-libav.".to_string());
     }
     if report.dmabuf_disabled {
-        tips.push(if report.dmabuf_set_by_app {
+        tips.push(if report.dmabuf_safe_mode {
+            "WebKit's DMA-BUF renderer is off for this start because Anix started in safe mode after it closed unexpectedly. A normal start turns it back on.".to_string()
+        } else if report.dmabuf_set_by_app {
             "WebKit's DMA-BUF renderer is off: Anix turns it off with NVIDIA's driver because it can leave the window blank. Video plays either way; scrolling is slower. To try it on, start Anix with WEBKIT_DISABLE_DMABUF_RENDERER=0.".to_string()
         } else {
             "WebKit's DMA-BUF renderer was turned off by your environment (WEBKIT_DISABLE_DMABUF_RENDERER), so scrolling is slower. Remove that variable unless the window turns blank without it.".to_string()
@@ -545,7 +571,7 @@ pub async fn report() -> HardwareReport {
     let wayland_display = env("WAYLAND_DISPLAY");
     let x11_display = env("DISPLAY");
     let xdg_session_type = env("XDG_SESSION_TYPE");
-    let dmabuf_value = std::env::var("WEBKIT_DISABLE_DMABUF_RENDERER").ok();
+    let dmabuf_value = env_lossy(DMABUF_VAR);
     let render_node = first_render_node();
     let mut report = HardwareReport {
         session: session_kind(env("GDK_BACKEND").as_deref(), wayland_display.as_deref(), xdg_session_type.as_deref(), x11_display.as_deref()).to_string(),
@@ -557,6 +583,7 @@ pub async fn report() -> HardwareReport {
         dmabuf_disabled: dmabuf_value.as_deref().is_some_and(|v| v != "0"),
         dmabuf_value,
         dmabuf_set_by_app: DMABUF_SET_BY.load(Ordering::SeqCst) == 1,
+        dmabuf_safe_mode: DMABUF_BY_SAFE_MODE.load(Ordering::SeqCst),
         gpu_vendor: render_node.as_deref().and_then(gpu),
         render_node: render_node.as_ref().map(|p| p.to_string_lossy().into_owned()),
         libva_driver_name: env("LIBVA_DRIVER_NAME"),

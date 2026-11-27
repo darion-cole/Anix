@@ -839,6 +839,7 @@
   "libraryFormat.formatTvShort": "TV 단편",
   "libraryFormat.gigabytes": "{size} GB",
   "libraryFormat.megabytes": "{size} MB",
+  "libraryFormat.kilobytes": "{size} KB",
   "localFilesTab.all": "전체",
   "localFilesTab.changeMatch": "매칭 변경",
   "localFilesTab.chooseAnother": "다른 폴더 선택",
@@ -1463,6 +1464,8 @@
   "settings.couldNotTurnOn": "{name}을(를) 켜지 못했어요",
   "settings.dohAutomatic": "자동",
   "settings.dohHint": "인터넷 제공업체의 DNS 대신 암호화된 리졸버로 제공처 도메인을 확인해요. 자동은 평소엔 일반 DNS를 쓰다가 사이트가 차단된 것 같으면 그 사이트만 리졸버를 써요.",
+  "settings.downloadAllSubtitles": "모든 자막 언어 다운로드",
+  "settings.downloadAllSubtitlesHint": "끔: 다운로드에는 설정한 자막 언어만 남깁니다(일치하는 것이 없으면 소스의 기본 자막). 켬: 소스가 제공하는 모든 언어를 저장합니다.",
   "settings.downloadingRepo": "저장소와 플러그인을 다운로드하는 중…",
   "settings.externalPlayer": "외부 플레이어",
   "settings.externalPlayerHint": "로컬 파일, 다 받은 다운로드, “외부 플레이어에서 열기”를 열어요. 설치돼 있어야 해요.",
@@ -2025,5 +2028,43 @@
   "fastDrawing.reasonSafe": "꺼짐: Anix가 --safe-graphics 옵션으로 시작되었습니다.",
   "fastDrawing.changeFailed": "빠른 그리기를 변경할 수 없습니다",
   "fastDrawing.dialogTitle": "Anix가 제대로 보이나요?",
-  "fastDrawing.dialogBody": "빠른 그리기가 켜졌습니다. 이 창이 제대로 보이고 부드럽게 스크롤되면 유지하세요. 그렇지 않으면 Anix가 끄고 다시 시작합니다."
+  "fastDrawing.dialogBody": "빠른 그리기가 켜졌습니다. 이 창이 제대로 보이고 부드럽게 스크롤되면 유지하세요. 그렇지 않으면 Anix가 끄고 다시 시작합니다.",
+  "settings.streamingResolution": "스트리밍 해상도",
+  "settings.streamingResolutionHint": "에피소드를 시작할 화질입니다. 소스에 없으면 가장 가까운 낮은 해상도, 그다음 가장 가까운 높은 해상도를 사용합니다.",
+  "settings.resolutionAuto": "자동",
+  "downloadSettings.downloadResolution": "다운로드 해상도",
+  "downloadSettings.downloadResolutionHint": "다운로드에 사용할 화질입니다. 소스에 없으면 가장 가까운 낮은 해상도, 그다음 가장 가까운 높은 해상도를 사용합니다.",
+  "settings.defaultPlaybackSpeed": "기본 재생 속도",
+  "settings.defaultPlaybackSpeedHint": "모든 에피소드는 이 속도로 시작합니다(0.5배~4배). 시청 중에 바꾼 속도는 해당 에피소드에만 적용됩니다.",
+  "playerSettingsPanel.customSpeed": "사용자 지정",
+  "downloadSettings.parallel": "동시 다운로드 수",
+  "downloadSettings.parallelHint": "동시에 내려받는 에피소드 수입니다. 1개가 서버에 가장 부담이 적습니다.",
+  "downloadSettings.speedLimit": "속도 제한",
+  "downloadSettings.speedLimitHint": "모든 다운로드의 합산 속도를 제한합니다.",
+  "downloadSettings.speedLimitOff": "끔",
+  "downloads.speed": "{speed}/초",
+  "downloads.speedLeft": "{speed}/초 · {time} 남음",
+  "discover.studio": "스튜디오",
+  "discover.studioPlaceholder": "예: MAPPA",
+  "smartCollection.studio": "스튜디오: {name}",
+  "smartCollection.franchise": "시청 순서대로 보는 시리즈",
+  "franchise.partial": "이 시리즈의 일부 작품은 아직 알 수 없습니다. 카탈로그에 연결되면 순서가 채워집니다.",
+  "franchise.unavailable": "카탈로그에 연결할 수 없어 시청 순서를 읽을 수 없습니다.",
+  "offline.savedPage": "{source}에서 저장한 페이지, {age}",
+  "offline.savedPageNoSource": "저장한 페이지, {age}",
+  "offline.ageNow": "방금",
+  "offline.ageMinutes": {
+    "other": "{count}분 전"
+  },
+  "offline.ageHours": {
+    "other": "{count}시간 전"
+  },
+  "offline.ageDays": {
+    "other": "{count}일 전"
+  },
+  "offline.changesWaiting": {
+    "other": "목록 변경 {count}건은 온라인이 되면 전송됩니다"
+  },
+  "settings.imageCacheLimit": "저장된 표지와 배너",
+  "settings.imageCacheLimitHint": "오프라인에서도 보이도록 이미지가 사용할 수 있는 디스크 공간입니다. 오래된 것부터 삭제됩니다. 현재 사용량:"
 }

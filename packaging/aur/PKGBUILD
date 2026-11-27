@@ -2,13 +2,13 @@
 #
 # Repackages the release DEB built by .github/workflows/release.yml. Like the DEB and RPM it uses
 # the system's WebKitGTK and GStreamer and starts with the web player; the embedded mpv player
-# needs the AppImage, whose libmpv is an LGPL build. Data lives in the same folders as every
+# can be picked in Settings when the system's libmpv (optdepends) is installed. Data lives in the same folders as every
 # other Anix build (~/.config/anix, ~/.local/share/anix), so switching to it moves nothing.
 #
 # At each release: set pkgver, reset pkgrel to 1, run `updpkgsums` and
 # `makepkg --printsrcinfo > .SRCINFO`, then test with `makepkg -si`.
 pkgname=anix-bin
-pkgver=1.4.1
+pkgver=1.4.3
 pkgrel=1
 pkgdesc='Anime catalogue, tracker, library and player'
 arch=('x86_64')
@@ -26,7 +26,7 @@ depends=(
   'xdg-utils'
 )
 optdepends=(
-  'mpv: open episodes in mpv'
+  'mpv: open episodes in mpv, and libmpv for the embedded player'
   'vlc: open episodes in VLC'
   'ffmpeg: download episodes that are streamed in parts (HLS)'
 )
@@ -35,7 +35,7 @@ conflicts=('anix')
 options=('!strip' '!debug')
 source=("https://github.com/MaidLover69/Anix/releases/download/v${pkgver}/Anix_${pkgver}_amd64.deb"
         "LICENSE-${pkgver}::https://raw.githubusercontent.com/MaidLover69/Anix/v${pkgver}/LICENSE")
-sha256sums=('d5d6963cc259ca47542b53f44b3a85a4d3cb988b46f6504f2ffa0b4288b4ea0c'
+sha256sums=('b0609cc86016559df6f72b7ea78d22a788fe88f6560ee217653abae1a5801442'
             '18b58b87a6862f3651243d210089290c8c329583702b76710d5685c2545edde2')
 
 package() {

@@ -41,6 +41,12 @@ pub async fn get_all_downloads(
         .map_err(|e| e.to_string())
 }
 
+/// Speed and time left of the running downloads, by download id.
+#[tauri::command]
+pub fn get_download_speeds() -> HashMap<String, downloads::DownloadSpeed> {
+    downloads::download_speeds()
+}
+
 /// Stops the download if it is running (ffmpeg included), removes its partial files and
 /// deletes the row. A finished file is left on disk unless `delete_file` is set; then the
 /// video and its subtitle side files go first, and the row stays if that fails.
@@ -51,6 +57,7 @@ pub async fn delete_download(
     delete_file: Option<bool>,
 ) -> Result<(), String> {
     downloads::cancel_download(&id).await;
+    downloads::forget_queued_source(&id);
     let record = db::get_download_by_id(&state.pool, &id)
         .await
         .map_err(|e| e.to_string())?;
@@ -60,7 +67,16 @@ pub async fn delete_download(
             .filter(|r| r.status.eq_ignore_ascii_case("COMPLETED"))
             .and_then(|r| r.file_path.clone())
         {
-            tokio::task::spawn_blocking(move || downloads::delete_finished_files(Path::new(&path)))
+            tokio::task::spawn_blocking(move || {
+                match downloads::get_download_dir() {
+                    Ok(root) => downloads::delete_download_files(Path::new(&path), &root),
+                    // E.g. an unmounted disk: still delete the file, just no folder tidying.
+                    Err(e) => {
+                        tracing::warn!("Download folder unavailable while deleting: {}", e);
+                        downloads::delete_finished_files(Path::new(&path))
+                    }
+                }
+            })
                 .await
                 .map_err(|e| e.to_string())??;
         }
@@ -138,6 +154,9 @@ pub async fn start_episode_download(
     headers: Option<HashMap<String, String>>,
     stream_type: Option<String>,
 ) -> Result<String, String> {
+    let subtitle_languages = tokio::task::spawn_blocking(downloads::subtitle_languages_from_saved_settings)
+        .await
+        .map_err(|e| e.to_string())?;
     let source = DownloadSource {
         url: downloads::validate_stream_url(&stream_url)?,
         stream_type,
@@ -146,20 +165,26 @@ pub async fn start_episode_download(
         headers: headers.unwrap_or_default(),
         subtitles,
         language: None,
+        subtitle_languages,
+        // The row's quality is the one the player is showing.
+        height: None,
     };
 
-    // Inserted as DOWNLOADING so the queue worker does not start it a second time.
-    record.status = db::STATUS_DOWNLOADING.to_string();
+    // Queued, so the worker starts it within the "downloads at once" setting and can renew its link.
+    record.status = db::STATUS_QUEUED.to_string();
     record.progress = 0.0;
     record.file_path = None;
     record.file_size = None;
     record.error_msg = None;
 
-    let download_id = db::create_download(&state.pool, &record)
-        .await
-        .map_err(|e| e.to_string())?;
-
-    downloads::start_download(state.pool.clone(), record, source);
-
-    Ok(download_id)
+    // Remembered before the row exists, so the worker cannot claim it first.
+    let source_key = record.id.clone();
+    downloads::queue_with_source(&source_key, source);
+    match db::create_download(&state.pool, &record).await {
+        Ok(id) => Ok(id),
+        Err(e) => {
+            downloads::forget_queued_source(&source_key);
+            Err(e.to_string())
+        }
+    }
 }

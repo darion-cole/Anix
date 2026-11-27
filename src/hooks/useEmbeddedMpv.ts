@@ -7,11 +7,12 @@ import type { Anime4kPreset } from '../lib/anime4k';
 import { buildProxyUrl } from '../lib/streamProxy';
 import type { StreamItem, SubtitleItem } from '../types';
 import { preferredAudioTrack } from '../components/player/playerLogic';
-import type { MediaTrackOption, PlayerEngine } from './usePlayerEngine';
+import type { MediaTrackOption, PlayerEngine, QualityLevel } from './usePlayerEngine';
 import { defaultSubtitleIndex, SUBTITLES_OFF } from './useSubtitleTracks';
 import type { SubtitleOption } from './useSubtitleTracks';
 import { t } from '../i18n';
-import { addedTrackId, fileSubtitleTracks, providerIndex, subtitleAtLoad, subtitleCorrection } from '../lib/mpvSubtitles';
+import { pickHeight } from '../lib/resolution';
+import { addedTrackId, duplicatesFileTrack, fileSubtitleTracks, providerIndex, subtitleAtLoad, subtitleCorrection } from '../lib/mpvSubtitles';
 
 /** The hidden hardware decoding self-test's stored result. */
 export interface HwdecSelfTest {
@@ -28,6 +29,8 @@ export interface EmbeddedMpvStatus {
   requested: boolean;
   available: boolean;
   error: string | null;
+  /** `error` is only a system package without libmpv: no notice, Settings still shows it. */
+  quiet: boolean;
   /** "Is the video player showing correctly?" must be asked now. */
   ask_confirm: boolean;
   /** Why the web player is used although embedded mpv was chosen before. */
@@ -76,6 +79,7 @@ export type MpvAction =
   | { action: 'set_mute'; muted: boolean }
   | { action: 'set_speed'; value: number }
   | { action: 'set_audio_track'; id: number | null }
+  | { action: 'set_video_track'; id: number | null }
   | { action: 'set_sub_track'; id: number | null }
   | { action: 'set_secondary_sub_track'; id: number | null }
   | { action: 'set_sub_delay'; seconds: number }
@@ -113,6 +117,10 @@ export interface MpvTrack {
   lang: string | null;
   title: string | null;
   codec: string | null;
+  /** The picture height of a video track (an HLS resolution), when mpv knows it. */
+  demux_h?: number | null;
+  /** An HLS variant's declared bits per second, when mpv knows it. */
+  hls_bitrate?: number | null;
   selected: boolean;
   default?: boolean;
   /** The URL a track was added from with `add_subtitle`; null for the file's own tracks. */
@@ -146,6 +154,8 @@ export interface MpvEngineOptions {
   startVerified: boolean;
   autoplay: boolean;
   preferredAudioLanguages: string[];
+  /** Streaming resolution wanted (a height), or null for mpv's own pick. */
+  wantedHeight: number | null;
   /** Subtitle languages wanted, most wanted first. */
   subtitleLanguages: string[];
   /** Dubbed audio: subtitle files are added but not shown. */
@@ -176,6 +186,7 @@ export function useMpvEngine({
   startVerified,
   autoplay,
   preferredAudioLanguages,
+  wantedHeight,
   subtitleLanguages,
   startSubtitlesOff,
   onFail,
@@ -184,6 +195,8 @@ export function useMpvEngine({
   const [streamIndex, setStreamIndex] = useState(0);
   const [loaded, setLoaded] = useState(false);
   const [tracks, setTracks] = useState<MpvTrack[]>([]);
+  /** The user's resolution choice (an mpv video track id); -1 is mpv's own pick. */
+  const [videoChoice, setVideoChoice] = useState(-1);
   const [selectedSubtitle, setSelectedSubtitle] = useState(SUBTITLES_OFF);
   const [selectedSecondary, setSelectedSecondary] = useState(SUBTITLES_OFF);
   const onFailRef = useRef(onFail);
@@ -198,7 +211,7 @@ export function useMpvEngine({
   /** The resume check waits for the file's duration, which mpv reports after it loaded. */
   const resumeCheck = useRef(false);
   // Read once, when loading first begins (as the web engine does).
-  const startRef = useRef({ startAt, startVerified, autoplay, preferredAudioLanguages, subtitleLanguages, startSubtitlesOff });
+  const startRef = useRef({ startAt, startVerified, autoplay, preferredAudioLanguages, wantedHeight, subtitleLanguages, startSubtitlesOff });
 
   // The page is see-through while mpv plays under it; playback stops when leaving.
   useEffect(() => {
@@ -341,6 +354,12 @@ export function useMpvEngine({
         const index = preferredAudioTrack(audio.map((t) => ({ lang: t.lang ?? '', name: t.title ?? '' })), start.preferredAudioLanguages);
         if (index !== -1 && !audio[index].selected) sendMpv({ action: 'set_audio_track', id: audio[index].id });
       }
+      // An HLS stream with several resolutions: start on the wanted one (mpv lists each as a video track).
+      const video = media.tracks.filter((t) => t.type === 'video' && t.id !== null && (t.demux_h ?? 0) > 0);
+      const height = video.length > 1 ? pickHeight(video.map((t) => t.demux_h ?? 0), start.wantedHeight) : null;
+      const chosen = video.find((t) => t.demux_h === height);
+      if (chosen && !chosen.selected) sendMpv({ action: 'set_video_track', id: chosen.id });
+      setVideoChoice(chosen?.id ?? -1);
       // A replay after the end starts where the user asked, not at the saved position.
       resumeCheck.current = !start.startVerified && !media.replaying;
       onDuration();
@@ -383,14 +402,18 @@ export function useMpvEngine({
   }, [tracks]);
 
   // The extension's files (added when picked), then the video file's own tracks.
+  const playsFile = !!streams[streamIndex]?.url.includes('/local/');
   const subtitleOptions = useMemo<SubtitleOption[]>(
     () => [
-      ...subtitles.map((sub, index) => ({
-        id: `ext:${index}`,
-        label: sub.language || t('useEmbeddedMpv.trackNumber', { number: index + 1 }),
-        format: sub.format || 'sub',
-        isDefault: !!sub.is_default,
-      })),
+      ...subtitles
+        .map((sub, index) => ({
+          id: `ext:${index}`,
+          label: sub.language || t('useEmbeddedMpv.trackNumber', { number: index + 1 }),
+          format: sub.format || 'sub',
+          isDefault: !!sub.is_default,
+        }))
+        // A downloaded file's own track already is this language (the side file would repeat it).
+        .filter((option) => !(playsFile && duplicatesFileTrack(option.label, tracks))),
       ...fileSubtitleTracks(tracks).map((t, index) => ({
         id: `${SUB_ID}${t.id}`,
         label: trackLabel(t, index),
@@ -398,13 +421,24 @@ export function useMpvEngine({
         isDefault: !!t.default,
       })),
     ],
-    [subtitles, tracks]
+    [subtitles, tracks, playsFile]
   );
   const audioTracks = useMemo<MediaTrackOption[]>(
     () => tracks.filter((t) => t.type === 'audio' && t.id !== null).map((t, index) => ({ id: t.id as number, label: trackLabel(t, index) })),
     [tracks]
   );
   const audioTrack = tracks.find((t) => t.type === 'audio' && t.selected)?.id ?? -1;
+
+  // The resolutions of an HLS stream; a track without a height stays out.
+  const levels = useMemo<QualityLevel[]>(
+    () => tracks.filter((t) => t.type === 'video' && t.id !== null && (t.demux_h ?? 0) > 0).map((t) => ({ id: t.id as number, height: t.demux_h as number, bitrate: t.hls_bitrate ?? 0 })),
+    [tracks]
+  );
+  const activeLevel = tracks.find((t) => t.type === 'video' && t.selected)?.id ?? -1;
+  const selectLevel = useCallback((id: number) => {
+    setVideoChoice(id);
+    sendMpv({ action: 'set_video_track', id: id < 0 ? null : id });
+  }, []);
 
   const selectAudioTrack = useCallback((id: number) => sendMpv({ action: 'set_audio_track', id }), []);
 
@@ -425,10 +459,10 @@ export function useMpvEngine({
     error: null,
     stream: streams[streamIndex] ?? null,
     usesHls: false,
-    levels: [],
-    selectedLevel: -1,
-    activeLevel: -1,
-    selectLevel: noop,
+    levels,
+    selectedLevel: videoChoice,
+    activeLevel,
+    selectLevel,
     audioTracks,
     audioTrack,
     selectAudioTrack,

@@ -1,6 +1,10 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { RefObject } from 'react';
 import { usePlayerStore } from '../stores/playerStore';
+import { startRateFor } from '../lib/speed';
+
+// The episode the last player showed, so a remount within it keeps the speed.
+let lastEpisodeKey: string | null = null;
 
 export interface MediaState {
   playing: boolean;
@@ -18,7 +22,11 @@ export interface MediaState {
  * with the media. The current time is left out on purpose: it changes several times a
  * second and only the timeline needs it.
  */
-export function useMediaState(videoRef: RefObject<HTMLVideoElement>): MediaState {
+export function useMediaState(videoRef: RefObject<HTMLVideoElement>, episodeKey: string, defaultSpeed?: unknown): MediaState {
+  const startRate = useRef<number | null>(null);
+  if (startRate.current === null) {
+    startRate.current = startRateFor(episodeKey, lastEpisodeKey, usePlayerStore.getState().playbackRate, defaultSpeed);
+  }
   const [state, setState] = useState<MediaState>(() => {
     const prefs = usePlayerStore.getState();
     return {
@@ -27,7 +35,7 @@ export function useMediaState(videoRef: RefObject<HTMLVideoElement>): MediaState
       ended: false,
       muted: prefs.muted,
       volume: prefs.volume,
-      rate: prefs.playbackRate,
+      rate: startRate.current ?? 1,
       duration: 0,
     };
   });
@@ -41,7 +49,10 @@ export function useMediaState(videoRef: RefObject<HTMLVideoElement>): MediaState
     // Out-of-range values throw when assigned, and the volume comes from storage.
     video.volume = prefs.volume >= 0 && prefs.volume <= 1 ? prefs.volume : 1;
     video.muted = prefs.muted === true;
-    const rate = prefs.playbackRate > 0 ? prefs.playbackRate : 1;
+    // A new episode starts at the default speed; the same one keeps what the user chose.
+    lastEpisodeKey = episodeKey;
+    const rate = startRate.current ?? 1;
+    usePlayerStore.getState().setPlaybackRate(rate);
     video.defaultPlaybackRate = rate;
     video.playbackRate = rate;
 

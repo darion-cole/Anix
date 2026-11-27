@@ -1,10 +1,11 @@
 [package]
 name = "anix"
-version = "1.4.1"
+version = "1.4.3"
 description = "Anix - anime catalogue, tracker, library and player for Linux"
 authors = ["Anix"]
 license = "MIT"
 edition = "2021"
+rust-version = "1.94"
 
 [lib]
 name = "anix_lib"
@@ -14,7 +15,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2.0", features = [] }
 
 [dependencies]
-tauri = { version = "2.2", features = ["devtools", "tray-icon"] }
+tauri = { version = "2.2", features = ["tray-icon"] }
 tauri-plugin-dialog = "2.2"
 tauri-plugin-deep-link = "2"
 notify-rust = "4"
@@ -24,7 +25,7 @@ serde_json = "1.0"
 tokio = { version = "1.38", features = ["full"] }
 # The TLS backend comes from this crate's `native-tls` (default) or `rustls` feature.
 reqwest = { version = "0.12", default-features = false, features = ["json", "gzip", "brotli", "charset", "http2", "system-proxy"] }
-sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }
+sqlx = { version = "0.9", features = ["runtime-tokio", "sqlite"] }
 moka = { version = "0.12", features = ["future"] }
 regex = "1.10"
 once_cell = "1.19"

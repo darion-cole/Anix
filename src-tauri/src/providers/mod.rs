@@ -2,6 +2,7 @@ pub mod common;
 pub mod languages;
 pub mod manager;
 pub mod matching;
+pub mod resolution;
 
 pub use manager::*;
 
@@ -70,6 +71,12 @@ pub trait AnimeProvider: Send + Sync {
     /// True when `get_sources` only returns streams whose first entry it has already checked
     /// for playability, so the manager does not check them a second time.
     fn verifies_streams(&self) -> bool {
+        false
+    }
+
+    /// True when the provider orders its streams by the wanted resolution before it checks
+    /// them, so the manager must not re-order them (an unchecked stream could pass a checked one).
+    fn orders_by_resolution(&self) -> bool {
         false
     }
 

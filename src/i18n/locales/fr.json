@@ -883,6 +883,7 @@
   "libraryFormat.formatTvShort": "TV court",
   "libraryFormat.gigabytes": "{size} Go",
   "libraryFormat.megabytes": "{size} Mo",
+  "libraryFormat.kilobytes": "{size} Ko",
   "localFilesTab.all": "Tous",
   "localFilesTab.changeMatch": "Changer la correspondance",
   "localFilesTab.chooseAnother": "Choisir un autre dossier",
@@ -1577,6 +1578,8 @@
   "settings.couldNotTurnOn": "Impossible d’activer {name}",
   "settings.dohAutomatic": "Automatique",
   "settings.dohHint": "Résoudre les domaines des fournisseurs via un résolveur chiffré plutôt que le DNS de votre FAI. Automatique utilise votre DNS habituel jusqu’à ce qu’un site semble bloqué, puis le résolveur pour ce site.",
+  "settings.downloadAllSubtitles": "Télécharger les sous-titres de toutes les langues",
+  "settings.downloadAllSubtitlesHint": "Désactivé : un téléchargement ne garde que vos langues de sous-titres (la piste par défaut de la source si aucune ne correspond). Activé : toutes les langues proposées par la source sont enregistrées.",
   "settings.downloadingRepo": "Téléchargement du dépôt et de ses plugins…",
   "settings.externalPlayer": "Lecteur externe",
   "settings.externalPlayerHint": "Ouvre les fichiers locaux, les téléchargements terminés et « Ouvrir dans le lecteur externe ». Il doit être installé.",
@@ -2193,5 +2196,51 @@
   "fastDrawing.reasonSafe": "Désactivé : Anix a été lancé avec --safe-graphics.",
   "fastDrawing.changeFailed": "Impossible de modifier l’affichage rapide",
   "fastDrawing.dialogTitle": "Anix s’affiche-t-il correctement ?",
-  "fastDrawing.dialogBody": "L’affichage rapide est activé. Si cette fenêtre s’affiche correctement et défile de façon fluide, gardez-le. Sinon, Anix le désactive et redémarre."
+  "fastDrawing.dialogBody": "L’affichage rapide est activé. Si cette fenêtre s’affiche correctement et défile de façon fluide, gardez-le. Sinon, Anix le désactive et redémarre.",
+  "settings.streamingResolution": "Résolution du streaming",
+  "settings.streamingResolutionHint": "La taille d'image à laquelle un épisode démarre. Si une source ne l'a pas, la plus proche en dessous est utilisée, puis la plus proche au-dessus.",
+  "settings.resolutionAuto": "Auto",
+  "downloadSettings.downloadResolution": "Résolution de téléchargement",
+  "downloadSettings.downloadResolutionHint": "La taille d'image des téléchargements. Si une source ne l'a pas, la plus proche en dessous est utilisée, puis la plus proche au-dessus.",
+  "settings.defaultPlaybackSpeed": "Vitesse de lecture par défaut",
+  "settings.defaultPlaybackSpeedHint": "Chaque épisode démarre à cette vitesse (0,5× à 4×). Une vitesse modifiée pendant le visionnage ne vaut que pour cet épisode.",
+  "playerSettingsPanel.customSpeed": "Personnalisée",
+  "downloadSettings.parallel": "Téléchargements simultanés",
+  "downloadSettings.parallelHint": "Nombre d'épisodes téléchargés en même temps. Un seul est le plus doux pour un hébergeur.",
+  "downloadSettings.speedLimit": "Limite de vitesse",
+  "downloadSettings.speedLimitHint": "Plafonne la vitesse cumulée de tous les téléchargements.",
+  "downloadSettings.speedLimitOff": "Désactivée",
+  "downloads.speed": "{speed}/s",
+  "downloads.speedLeft": "{speed}/s · {time} restant",
+  "discover.studio": "Studio",
+  "discover.studioPlaceholder": "ex. MAPPA",
+  "smartCollection.studio": "Studio : {name}",
+  "smartCollection.franchise": "Franchise dans l’ordre de visionnage",
+  "franchise.partial": "Certaines entrées de cette franchise ne sont pas encore connues. L’ordre se complète dès qu’un catalogue est joignable.",
+  "franchise.unavailable": "L’ordre de visionnage est illisible tant qu’aucun catalogue n’est joignable.",
+  "offline.savedPage": "Page enregistrée de {source}, {age}",
+  "offline.savedPageNoSource": "Page enregistrée, {age}",
+  "offline.ageNow": "à l’instant",
+  "offline.ageMinutes": {
+    "one": "il y a {count} minute",
+    "many": "il y a {count} minutes",
+    "other": "il y a {count} minutes"
+  },
+  "offline.ageHours": {
+    "one": "il y a {count} heure",
+    "many": "il y a {count} heures",
+    "other": "il y a {count} heures"
+  },
+  "offline.ageDays": {
+    "one": "il y a {count} jour",
+    "many": "il y a {count} jours",
+    "other": "il y a {count} jours"
+  },
+  "offline.changesWaiting": {
+    "one": "{count} modification de liste sera envoyée une fois en ligne",
+    "many": "{count} modifications de liste seront envoyées une fois en ligne",
+    "other": "{count} modifications de liste seront envoyées une fois en ligne"
+  },
+  "settings.imageCacheLimit": "Jaquettes et bannières enregistrées",
+  "settings.imageCacheLimitHint": "Espace disque que les images peuvent utiliser pour rester visibles hors ligne. Les plus anciennes sont supprimées en premier. Utilisé :"
 }

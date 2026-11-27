@@ -1,3 +1,5 @@
+pub mod engine;
+
 use crate::commands::player::sanitized_command;
 use crate::db;
 use crate::error::AppError;
@@ -5,7 +7,7 @@ use crate::models::downloads::{
     HEADROOM_BYTES, P1080_BYTES, P360_BYTES, P480_BYTES, P720_BYTES,
 };
 use crate::models::{DownloadRecord, SourcesResult, StreamItem, SubtitleItem};
-use crate::providers::manager::ProviderManager;
+use crate::providers::manager::{ProviderManager, NO_OTHER_PROVIDER_MESSAGE, NO_PLUGIN_MESSAGE};
 use crate::state::AppState;
 use once_cell::sync::{Lazy, OnceCell};
 use serde::{Deserialize, Serialize};
@@ -13,13 +15,14 @@ use sqlx::SqlitePool;
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::future::Future;
+use std::pin::Pin;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 use tauri::Manager;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, BufWriter};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::sync::{watch, Notify, OwnedSemaphorePermit, Semaphore};
 use tracing::{error, info, warn};
 
@@ -37,8 +40,8 @@ pub const PART_SUFFIX: &str = ".anix-part";
 /// The suffix working files had before the app was renamed; only cleaned up, never written.
 pub const LEGACY_PART_SUFFIX: &str = ".anilili-part";
 
-/// Queued downloads that run at the same time.
-const MAX_QUEUE_DOWNLOADS: usize = 2;
+/// Most queued downloads that can run at the same time; Settings › Downloads picks 1 to 3.
+const MAX_QUEUE_DOWNLOADS: usize = 3;
 const QUEUE_POLL_INTERVAL: Duration = Duration::from_secs(5);
 const PROGRESS_WRITE_INTERVAL: Duration = Duration::from_secs(1);
 /// A direct download with no data for this long is treated as dead.
@@ -136,17 +139,59 @@ pub fn configured_download_dir(settings: &serde_json::Value, home: Option<&Path>
     path.is_absolute().then_some(path)
 }
 
-fn read_download_dir_setting() -> Option<PathBuf> {
+fn read_settings() -> Option<serde_json::Value> {
     let settings_path = db::get_config_dir().ok()?.join("settings.json");
     let text = std::fs::read_to_string(settings_path).ok()?;
     let settings: serde_json::Value = match serde_json::from_str(&text) {
         Ok(v) => v,
         Err(e) => {
-            warn!("settings.json could not be parsed, using the default download folder: {}", e);
+            warn!("settings.json could not be parsed, using the defaults for downloads: {}", e);
             return None;
         }
     };
-    configured_download_dir(&settings, dirs::home_dir().as_deref())
+    Some(settings)
+}
+
+fn read_download_dir_setting() -> Option<PathBuf> {
+    configured_download_dir(&read_settings()?, dirs::home_dir().as_deref())
+}
+
+/// The subtitle languages a download fetches: `None` (every track) when "Download all
+/// subtitle languages" is on, else the user's subtitle languages in order.
+pub fn subtitle_languages_for_download(settings: &serde_json::Value) -> Option<Vec<String>> {
+    if settings.get("download_all_subtitles").and_then(|v| v.as_bool()) == Some(true) {
+        return None;
+    }
+    Some(crate::providers::languages::LanguagePrefs::from_settings(settings).sub)
+}
+
+/// [`subtitle_languages_for_download`] for the saved settings. Reads a file, so async code
+/// calls it through `spawn_blocking`.
+pub fn subtitle_languages_from_saved_settings() -> Option<Vec<String>> {
+    let settings = read_settings().unwrap_or_else(|| serde_json::json!({}));
+    subtitle_languages_for_download(&settings)
+}
+
+/// The tracks a download fetches: for each wanted language (in order, matched by language
+/// not spelling) one track, the default-flagged one first. With no match, or no wanted
+/// language, the source's default (else first) track. `None` keeps every track, the default
+/// first. The first track is the one embedded in the video.
+pub fn select_subtitles(tracks: &[SubtitleItem], wanted: Option<&[String]>) -> Vec<SubtitleItem> {
+    let mut by_default: Vec<&SubtitleItem> = tracks.iter().collect();
+    by_default.sort_by_key(|t| t.is_default != Some(true));
+    let Some(wanted) = wanted else { return by_default.into_iter().cloned().collect() };
+
+    let mut chosen: Vec<&SubtitleItem> = Vec::new();
+    for code in wanted {
+        let found = by_default
+            .iter()
+            .find(|t| crate::providers::languages::normalize_language(&t.language).as_deref() == Some(code.as_str()));
+        chosen.extend(found.copied());
+    }
+    if chosen.is_empty() {
+        chosen.extend(by_default.first());
+    }
+    chosen.into_iter().cloned().collect()
 }
 
 /// The folder downloads are saved in: the `download_dir` setting, or `downloads` inside the
@@ -289,6 +334,20 @@ pub fn output_base_name(series_title: &str, episode_num: f64, category: &str, qu
     format!("{}{}", title, suffix)
 }
 
+/// `Episode 03`, the folder of one episode inside its title folder.
+pub fn episode_dir_name(episode_num: f64) -> String {
+    format!("Episode {:02}", episode_num)
+}
+
+/// `<root>/<title>/Episode NN`: where a new download is saved. The title goes through the
+/// same sanitising and length limit as file names, so it is always one folder inside `root`.
+pub fn output_dir(root: &Path, series_title: &str, episode_num: f64) -> PathBuf {
+    let title = sanitize_filename(series_title);
+    let title = if title.is_empty() { "Untitled" } else { &title };
+    let title = truncate_to_bytes(title, MAX_BASE_NAME_BYTES).trim_end();
+    root.join(title).join(episode_dir_name(episode_num))
+}
+
 /// A short stable tag derived from the download id; it keeps the working files of two
 /// downloads of the same episode apart. SHA-256, so every Anix build computes the same tag
 /// and an update does not orphan the resumable files of queued downloads.
@@ -315,26 +374,45 @@ fn is_resume_file(path: &Path) -> bool {
 /// Only these exact `*.anix-part` names are touched, never a finished video. Returns how many
 /// entries were removed. Call it only while the download is not running.
 pub fn remove_resume_files(dir: &Path, record: &DownloadRecord) -> usize {
-    RESUME_ROLES
+    // The episode folder of the current layout, and the folder itself for older downloads.
+    let episode = output_dir(dir, &record.series_title, record.episode_num);
+    let folders = [episode.clone(), dir.to_path_buf()];
+    let removed = folders
         .iter()
-        .map(|role| work_file_path(dir, record, role))
+        .flat_map(|folder| RESUME_ROLES.iter().map(move |role| work_file_path(folder, record, role)))
         .filter(|path| match std::fs::symlink_metadata(path) {
             Ok(meta) if meta.is_dir() => std::fs::remove_dir_all(path).is_ok(),
             Ok(_) => std::fs::remove_file(path).is_ok(),
             Err(_) => false,
         })
-        .count()
+        .count();
+    if removed > 0 {
+        prune_empty_folders(&episode, dir);
+    }
+    removed
 }
 
-/// Whether a download that failed with `error` keeps its resumable files for Try again. Only
-/// failures a later try can get past do: the network dropped, stalled or timed out, or the host
-/// answered 408, 429 or 5xx. Anything else (a refusal, a web page, a full disk, ffmpeg) starts
-/// over, so a bad or unwanted partial never lingers.
+/// Where a new download of `record` is saved under `root`: `<title>/Episode NN`, except that a
+/// download queued under 1.4.1 and part-way done keeps its flat folder, so it resumes.
+pub fn download_folder(root: &Path, record: &DownloadRecord) -> PathBuf {
+    let flat_partial = RESUME_ROLES.iter().any(|role| work_file_path(root, record, role).exists());
+    if flat_partial {
+        root.to_path_buf()
+    } else {
+        output_dir(root, &record.series_title, record.episode_num)
+    }
+}
+
+/// Whether a download that failed with `error` keeps its resumable files for Try again. The
+/// network dropping, stalling or timing out does, and so does the host refusing a request (an
+/// expired link, a 403 or 404, a link that could not be renewed): the saved segments are still
+/// good, and a later try can renew the link. Anything else (a web page, a full disk, ffmpeg)
+/// starts over, so a bad or unwanted partial never lingers.
 ///
 /// shortcut: matches the English failure messages written in this module, so a reworded message
 /// falls back to starting over; switch to a typed error if more callers need the reason.
 pub fn keeps_partial_files_after(error: &str) -> bool {
-    const NETWORK: [&str; 8] = [
+    const KEPT: [&str; 12] = [
         "Could not reach the stream host",
         "The stream host did not answer in time",
         "A segment of the stream was interrupted",
@@ -343,14 +421,12 @@ pub fn keeps_partial_files_after(error: &str) -> bool {
         "The download was interrupted after",
         "The download stalled after",
         "The download is incomplete",
+        "A segment of the stream could not be fetched: HTTP ",
+        "The stream host answered HTTP ",
+        "The stream link expired and could not be renewed",
+        "The renewed stream is not the same",
     ];
-    if NETWORK.iter().any(|start| error.starts_with(start)) {
-        return true;
-    }
-    let refused = error.starts_with("A segment of the stream could not be fetched: HTTP ")
-        || error.starts_with("The stream host answered HTTP ");
-    let status = error.split("HTTP ").nth(1).and_then(|rest| rest.get(..3)).and_then(|code| code.parse::<u16>().ok());
-    refused && matches!(status, Some(408 | 429 | 500..=599))
+    KEPT.iter().any(|start| error.starts_with(start))
 }
 
 /// Where a download keeps the working file `role` in `dir`.
@@ -364,16 +440,31 @@ pub fn work_file_path(dir: &Path, record: &DownloadRecord, role: &str) -> PathBu
 /// downloads tagged `keep` (see [`work_tag`]). The HLS segment folder is the only directory
 /// removed. Returns how many entries were removed. Only call it while no download is running.
 pub fn remove_stale_part_files(dir: &Path, keep: &[String]) -> usize {
+    stale_part_files(dir, keep, 0, None)
+}
+
+/// How many folders below the download folder hold working files: `<title>/Episode NN`.
+const WORK_DEPTH: u32 = 2;
+
+/// `skip` is a folder left alone with everything in it (the current download folder).
+fn stale_part_files(dir: &Path, keep: &[String], depth: u32, skip: Option<&Path>) -> usize {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
         Err(_) => return 0,
     };
 
+    // A big direct file also keeps its part files (`….download.p<N>.anix-part`, see
+    // `engine::part_path`), which hold its bytes until they are joined at the end.
     let kept = |name: &str| {
         keep.iter().any(|tag| {
-            RESUME_ROLES
-                .iter()
-                .any(|role| name.ends_with(&format!(".{}.{}{}", tag, role, PART_SUFFIX)))
+            RESUME_ROLES.iter().any(|role| {
+                let file = format!(".{}.{}", tag, role);
+                name.ends_with(&format!("{}{}", file, PART_SUFFIX))
+                    || name
+                        .strip_suffix(PART_SUFFIX)
+                        .and_then(|stem| stem.rsplit_once(".p"))
+                        .is_some_and(|(head, index)| head.ends_with(&file) && index.parse::<usize>().is_ok())
+            })
         })
     };
     let mut removed = 0;
@@ -381,6 +472,19 @@ pub fn remove_stale_part_files(dir: &Path, keep: &[String]) -> usize {
         let name = entry.file_name();
         let name = name.to_string_lossy();
         let is_part = name.ends_with(PART_SUFFIX) || name.ends_with(LEGACY_PART_SUFFIX);
+        let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+        if skip.is_some_and(|skip| entry.path().starts_with(skip)) {
+            continue;
+        }
+        if !is_part && is_dir && depth < WORK_DEPTH {
+            let inner = stale_part_files(&entry.path(), keep, depth + 1, skip);
+            if inner > 0 {
+                // A folder the clean-up emptied (a cancelled new download) goes too.
+                let _ = std::fs::remove_dir(entry.path());
+            }
+            removed += inner;
+            continue;
+        }
         if !is_part || kept(&name) {
             continue;
         }
@@ -432,13 +536,13 @@ pub fn remove_part_files_in_old_dirs(list: &Path, current: &Path) -> usize {
             continue;
         }
         if dir.is_dir() {
-            removed += remove_stale_part_files(dir, &[]);
+            removed += stale_part_files(dir, &[], 0, Some(current));
         } else {
             still.push(line);
         }
     }
-    let current = current.to_string_lossy();
-    still.push(&current);
+    let current_line = current.to_string_lossy();
+    still.push(&current_line);
     let _ = std::fs::write(list, still.join("\n") + "\n");
     removed
 }
@@ -460,6 +564,10 @@ pub struct DownloadSource {
     /// ISO 639-1 code the provider gave the result: the subtitle language of a sub, the audio
     /// language of a dub.
     pub language: Option<String>,
+    /// Subtitle languages to fetch, as codes in order; `None` fetches every track.
+    pub subtitle_languages: Option<Vec<String>>,
+    /// The picture height the extension labelled the stream with (`"720p"` → 720), when it did.
+    pub height: Option<u32>,
 }
 
 /// The audio and subtitle language codes stored on a download row. A sub is Japanese audio
@@ -491,6 +599,8 @@ impl DownloadSource {
             headers: stream.headers.clone().unwrap_or_default(),
             subtitles,
             language: None,
+            subtitle_languages: None,
+            height: stream.quality.as_deref().and_then(quality_height),
         }
     }
 }
@@ -580,7 +690,7 @@ fn apply_headers(mut req: reqwest::RequestBuilder, headers: &RequestHeaders) -> 
     req
 }
 
-fn quality_height(quality: &str) -> Option<u32> {
+pub(crate) fn quality_height(quality: &str) -> Option<u32> {
     let digits: String = quality
         .chars()
         .skip_while(|c| !c.is_ascii_digit())
@@ -1012,24 +1122,81 @@ pub enum DownloadOutcome {
     Failed(String),
     /// Stopped on request; working files are gone and the row was left alone.
     Cancelled,
+    /// A queued try failed and try `next_try` follows `after` from now; the row stays
+    /// `DOWNLOADING` with a note until then.
+    Retrying { next_try: u32, after: Duration },
 }
 
 struct Finished {
     path: PathBuf,
     size: i64,
+    /// The quality the file was saved at, when it differs from the row's.
+    quality: Option<String>,
+}
+
+/// Episode folders that running downloads use, with how many each.
+static BUSY_FOLDERS: Lazy<Mutex<HashMap<PathBuf, usize>>> = Lazy::new(|| Mutex::new(HashMap::new()));
+
+/// A running download uses `episode` (a `<title>/Episode NN` folder): until it releases it, the
+/// folder is not pruned, so a sub and a dub of one episode do not remove each other's folder.
+pub fn claim_episode_folder(episode: &Path) {
+    *lock(&BUSY_FOLDERS).entry(episode.to_path_buf()).or_insert(0) += 1;
+}
+
+/// Ends a [`claim_episode_folder`]; the folders are pruned ([`prune_empty_folders`]) once the
+/// last user of `episode` is done.
+pub fn release_episode_folder(episode: &Path, root: &Path) {
+    {
+        let mut busy = lock(&BUSY_FOLDERS);
+        if let Some(n) = busy.get_mut(episode) {
+            *n = n.saturating_sub(1);
+            if *n == 0 {
+                busy.remove(episode);
+            }
+        }
+    }
+    prune_empty_folders(episode, root);
+}
+
+/// Holds a claim on an episode folder and releases it (pruning) on drop, also when the job panics.
+struct FolderClaim {
+    episode: PathBuf,
+    root: PathBuf,
+}
+
+impl Drop for FolderClaim {
+    fn drop(&mut self) {
+        release_episode_folder(&self.episode, &self.root);
+    }
 }
 
 /// Files a download has created and not yet handed over as results.
 #[derive(Clone, Default)]
-struct WorkFiles(Arc<Mutex<Vec<PathBuf>>>);
+struct WorkFiles {
+    files: Arc<Mutex<Vec<PathBuf>>>,
+    /// The `<title>/Episode NN` folder of a new download and the download folder it is in.
+    folder: Arc<Mutex<Option<FolderClaim>>>,
+}
 
 impl WorkFiles {
     fn track(&self, path: &Path) {
-        lock(&self.0).push(path.to_path_buf());
+        lock(&self.files).push(path.to_path_buf());
     }
 
     fn release(&self, path: &Path) {
-        lock(&self.0).retain(|p| p != path);
+        lock(&self.files).retain(|p| p != path);
+    }
+
+    /// Notes the new download's episode folder, which it prunes at the end.
+    fn use_folder(&self, episode: PathBuf, root: PathBuf) {
+        claim_episode_folder(&episode);
+        *lock(&self.folder) = Some(FolderClaim { episode, root });
+    }
+
+    /// Removes the new download's episode and title folders if nothing is left in them and no
+    /// other running download uses the episode folder.
+    fn prune_folders(&self) {
+        drop(lock(&self.folder).take());
     }
 
     async fn remove_all(&self) {
@@ -1038,7 +1205,7 @@ impl WorkFiles {
 
     /// Removes the tracked files `doomed` picks and forgets the rest, which stay on disk.
     async fn remove_where(&self, doomed: impl Fn(&Path) -> bool) {
-        let paths: Vec<PathBuf> = std::mem::take(&mut *lock(&self.0));
+        let paths: Vec<PathBuf> = std::mem::take(&mut *lock(&self.files));
         for path in paths.into_iter().filter(|p| doomed(p)) {
             // The HLS segment folder is the one tracked directory.
             if tokio::fs::remove_file(&path).await.is_err() {
@@ -1046,6 +1213,82 @@ impl WorkFiles {
             }
         }
     }
+}
+
+/// Looks the stream up again, the way the queue found it the first time.
+pub type SourceFn = Arc<dyn Fn() -> Pin<Box<dyn Future<Output = Result<DownloadSource, String>> + Send>> + Send + Sync>;
+
+/// Speed and time left of a running download, shown on Downloads.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct DownloadSpeed {
+    pub speed_bps: f64,
+    pub eta_s: Option<u64>,
+}
+
+static SPEEDS: Lazy<Mutex<HashMap<String, DownloadSpeed>>> = Lazy::new(|| Mutex::new(HashMap::new()));
+
+/// The speed of every running download, by download id.
+pub fn download_speeds() -> HashMap<String, DownloadSpeed> {
+    lock(&SPEEDS).clone()
+}
+
+struct SpeedEntry(String);
+
+impl Drop for SpeedEntry {
+    fn drop(&mut self) {
+        lock(&SPEEDS).remove(&self.0);
+    }
+}
+
+/// Runs `work` while saving its progress and speed about twice a second. `fraction` turns the
+/// meter into progress; `remaining` is the bytes still to come, when it can tell.
+async fn with_progress<T>(
+    job: &Job<'_>,
+    meter: &engine::SpeedMeter,
+    fraction: impl Fn(&engine::SpeedMeter) -> Option<f64>,
+    remaining: impl Fn(&engine::SpeedMeter) -> Option<u64>,
+    work: impl Future<Output = T>,
+) -> T {
+    tokio::pin!(work);
+    let _entry = SpeedEntry(job.record.id.clone());
+    let mut reporter = ProgressReporter::new(job.pool, &job.record.id);
+    let mut tick = tokio::time::interval(Duration::from_millis(500));
+    loop {
+        tokio::select! {
+            result = &mut work => return result,
+            _ = tick.tick() => {
+                let bps = meter.bytes_per_sec(Instant::now());
+                let eta = remaining(meter).and_then(|left| engine::eta_seconds(left, bps));
+                lock(&SPEEDS).insert(job.record.id.clone(), DownloadSpeed { speed_bps: bps, eta_s: eta });
+                reporter.report(fraction(meter), Some(meter.bytes() as i64)).await;
+            }
+        }
+    }
+}
+
+/// Why a fetch failed, in the words the Downloads page shows. `have` is the bytes saved so far
+/// for a direct file; `None` for the files of an HLS stream.
+fn fetch_failure(error: engine::FetchError, have: Option<u64>) -> String {
+    use engine::FetchError::*;
+    match (error, have) {
+        (Status { code, .. }, None) => format!("A segment of the stream could not be fetched: HTTP {}.", code),
+        (Status { code, .. }, Some(_)) => format!("The stream host answered HTTP {}.", code),
+        (Connect(e), None) => format!("Could not reach the stream host: {}", e),
+        (Connect(e), Some(_)) if e.starts_with("The download is incomplete") => e,
+        (Connect(e), Some(n)) => format!("The download was interrupted after {} bytes: {}", n, e),
+        (Timeout, Some(n)) => format!("The download stalled after {} bytes: no data for {} seconds.", n, STALL_TIMEOUT.as_secs()),
+        (Timeout, None) => "The stream host did not answer in time.".to_string(),
+        (Changed, _) => "The file changed on the server while it was downloading.".to_string(),
+        (Integrity(e) | Io(e), _) => e,
+        (Manifest(kind), _) => format!("The body is a {} playlist.", kind),
+    }
+}
+
+/// The headers of every request the engine makes, as name and value pairs.
+fn header_pairs(headers: &RequestHeaders) -> Vec<(String, String)> {
+    let mut pairs = vec![("User-Agent".to_string(), headers.user_agent.clone())];
+    pairs.extend(headers.headers.iter().cloned());
+    pairs
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -1059,12 +1302,18 @@ struct Job<'a> {
     base: String,
     tag: String,
     work: &'a WorkFiles,
+    /// The height of the HLS variant that is downloaded; 0 when unknown.
+    got_height: std::sync::atomic::AtomicU32,
+    /// Asks the extension for the stream again, when a link expires mid-download.
+    renew: Option<SourceFn>,
 }
 
 impl Job<'_> {
     /// Path of a working file; it is removed again unless the download hands it over.
     fn work_path(&self, role: &str) -> PathBuf {
         let path = self.dir.join(work_file_name(&self.base, &self.tag, role));
+        // A job of the same episode may have pruned the folder meanwhile.
+        let _ = std::fs::create_dir_all(&self.dir);
         self.work.track(&path);
         path
     }
@@ -1119,18 +1368,15 @@ fn container_extension(url: &str) -> &'static str {
 
 /// Fetches the subtitle files with the stream's headers. A subtitle that cannot be
 /// fetched, is not a 2xx response, or is not a subtitle file is skipped with a log line;
-/// it never fails the download. The default subtitle comes first.
+/// it never fails the download. `subtitles` is already chosen and ordered ([`select_subtitles`]).
 async fn fetch_subtitles(
     job: &Job<'_>,
     client: &reqwest::Client,
     headers: &RequestHeaders,
     subtitles: &[SubtitleItem],
 ) -> Vec<SubtitleInput> {
-    let mut ordered: Vec<&SubtitleItem> = subtitles.iter().collect();
-    ordered.sort_by_key(|s| s.is_default != Some(true));
-
     let mut fetched = Vec::new();
-    for (idx, sub) in ordered.into_iter().enumerate() {
+    for (idx, sub) in subtitles.iter().enumerate() {
         let body = async {
             let url = guarded_stream_url(&sub.url)?;
             let res = apply_headers(client.get(&url), headers)
@@ -1256,6 +1502,9 @@ pub struct HlsPlan {
     /// Absolute URL and local name of every file, in playlist order: keys, init sections and
     /// media segments.
     pub files: Vec<(String, String)>,
+    /// For each of `files`: whether it is a media segment encrypted with AES-128, whose bytes
+    /// cannot be recognised as video before they are decrypted.
+    pub encrypted: Vec<bool>,
     pub duration_s: f64,
 }
 
@@ -1285,9 +1534,22 @@ pub fn hls_attribute<'a>(attrs: &'a str, name: &str) -> Option<&'a str> {
 /// highest bandwidth. `None` when it has none, or when audio comes as a separate rendition,
 /// which only ffmpeg's own HLS reader combines.
 pub fn best_hls_variant(text: &str, base: &str) -> Option<String> {
+    hls_variant_for(text, base, None)
+}
+
+/// Like `best_hls_variant`, but with a wanted picture height (a `RESOLUTION` height): the
+/// exact one, else the closest lower, else the closest higher. Variants without a
+/// `RESOLUTION` are only used when none has one, or when no height is wanted.
+pub fn hls_variant_for(text: &str, base: &str, wanted: Option<u32>) -> Option<String> {
+    hls_variant_pick(text, base, wanted).map(|(url, _)| url)
+}
+
+/// `hls_variant_for` with the picked variant's height (0 when it states none).
+fn hls_variant_pick(text: &str, base: &str, wanted: Option<u32>) -> Option<(String, u32)> {
     let base = reqwest::Url::parse(base).ok()?;
     let mut lines = text.lines().map(str::trim);
-    let mut best: Option<((u64, u64), String)> = None;
+    // (height, pixels, bandwidth, url)
+    let mut variants: Vec<(u64, u64, u64, String)> = Vec::new();
     while let Some(line) = lines.next() {
         if let Some(attrs) = line.strip_prefix("#EXT-X-MEDIA:") {
             if hls_attribute(attrs, "TYPE") == Some("AUDIO") && hls_attribute(attrs, "URI").is_some() {
@@ -1296,17 +1558,48 @@ pub fn best_hls_variant(text: &str, base: &str) -> Option<String> {
         }
         let Some(attrs) = line.strip_prefix("#EXT-X-STREAM-INF:") else { continue };
         let uri = lines.by_ref().find(|l| !l.is_empty() && !l.starts_with('#'))?;
-        let pixels = hls_attribute(attrs, "RESOLUTION")
+        let (width, height) = hls_attribute(attrs, "RESOLUTION")
             .and_then(|r| r.split_once('x'))
-            .and_then(|(w, h)| Some(w.parse::<u64>().ok()? * h.parse::<u64>().ok()?))
-            .unwrap_or(0);
+            .and_then(|(w, h)| Some((w.parse::<u64>().ok()?, h.parse::<u64>().ok()?)))
+            .unwrap_or((0, 0));
         let bandwidth = hls_attribute(attrs, "BANDWIDTH").and_then(|b| b.parse::<u64>().ok()).unwrap_or(0);
-        let url = base.join(uri).ok()?.to_string();
-        if best.as_ref().is_none_or(|(rank, _)| (pixels, bandwidth) > *rank) {
-            best = Some(((pixels, bandwidth), url));
-        }
+        variants.push((height, width * height, bandwidth, base.join(uri).ok()?.to_string()));
     }
-    best.map(|(_, url)| url)
+    // The first of equal variants wins (max_by_key would take the last).
+    type Variant = (u64, u64, u64, String);
+    fn best(candidates: Vec<&Variant>) -> Option<&Variant> {
+        candidates.into_iter().fold(None, |best, v| match best {
+            Some(b) if (b.1, b.2) >= (v.1, v.2) => Some(b),
+            _ => Some(v),
+        })
+    }
+    let rated: Vec<&(u64, u64, u64, String)> = variants.iter().filter(|v| v.0 > 0).collect();
+    let chosen = match wanted.filter(|_| !rated.is_empty()).map(u64::from) {
+        None => best(variants.iter().collect()),
+        Some(wanted) => {
+            // Heights in the order exact, closest lower, closest higher.
+            let pick_height = rated
+                .iter()
+                .map(|v| v.0)
+                .filter(|h| *h <= wanted)
+                .max()
+                .or_else(|| rated.iter().map(|v| v.0).min())?;
+            best(rated.into_iter().filter(|v| v.0 == pick_height).collect())
+        }
+    }?;
+    Some((chosen.3.clone(), chosen.0 as u32))
+}
+
+/// The base name of the finished file: named by the height that was actually downloaded when
+/// that is not the one asked for (720p asked, 480p the closest the stream had).
+pub fn downloaded_base_name(series_title: &str, episode_num: f64, category: &str, asked: &str, got: Option<u32>) -> String {
+    output_base_name(series_title, episode_num, category, &saved_quality(asked, got).unwrap_or_else(|| asked.to_string()))
+}
+
+/// The quality a download was saved at (`"360p"`) when it is not the one asked for; `None` when
+/// it is, or when the height is unknown.
+fn saved_quality(asked: &str, got: Option<u32>) -> Option<String> {
+    got.filter(|h| *h > 0 && quality_height(asked) != Some(*h)).map(|h| format!("{}p", h))
 }
 
 /// Plans the download of a finished (VOD) media playlist. `None` for anything the plan does
@@ -1325,6 +1618,8 @@ pub fn plan_hls_download(text: &str, base: &str) -> Option<HlsPlan> {
 
     let mut playlist: Vec<String> = Vec::new();
     let mut files: Vec<(String, String)> = Vec::new();
+    let mut encrypted: Vec<bool> = Vec::new();
+    let mut encrypting = false;
     let (mut segments, mut keys, mut maps) = (0usize, 0usize, 0usize);
     let mut duration_s = 0.0;
     for line in text.lines().map(str::trim).filter(|l| !l.is_empty()) {
@@ -1333,8 +1628,12 @@ pub fn plan_hls_download(text: &str, base: &str) -> Option<HlsPlan> {
         }
         let local = if let Some(attrs) = line.strip_prefix("#EXT-X-KEY:") {
             match hls_attribute(attrs, "METHOD")? {
-                "NONE" => None,
+                "NONE" => {
+                    encrypting = false;
+                    None
+                }
                 "AES-128" => {
+                    encrypting = true;
                     keys += 1;
                     Some((hls_attribute(attrs, "URI")?, format!("key{}.key", keys - 1)))
                 }
@@ -1359,18 +1658,36 @@ pub fn plan_hls_download(text: &str, base: &str) -> Option<HlsPlan> {
             segments += 1;
             let name = format!("seg{}.{}", segments - 1, if maps > 0 { "m4s" } else { "ts" });
             files.push((absolute(line)?, name.clone()));
+            encrypted.push(encrypting);
             playlist.push(name);
             continue;
         };
         match local {
             Some((uri, name)) => {
                 files.push((absolute(uri)?, name.clone()));
+                // An init section after an AES-128 key is encrypted too (RFC 8216 4.3.2.5); a key is not.
+                encrypted.push(encrypting && name.starts_with("init"));
                 playlist.push(line.replacen(&format!("URI=\"{}\"", uri), &format!("URI=\"{}\"", name), 1));
             }
             None => playlist.push(line.to_string()),
         }
     }
-    (segments > 0).then(|| HlsPlan { playlist: playlist.join("\n") + "\n", files, duration_s })
+    (segments > 0).then(|| HlsPlan { playlist: playlist.join("\n") + "\n", files, encrypted, duration_s })
+}
+
+/// Whether two local playlists describe the same stream: the same number of segments, media sequence
+/// and key and init-section lines (so the same IVs). Only then can a renewed stream take over the
+/// segments already saved.
+pub fn same_hls_shape(saved: &str, fresh: &str) -> bool {
+    let shape = |text: &str| {
+        let segments = text.lines().filter(|l| !l.is_empty() && !l.starts_with('#')).count();
+        let keys: Vec<&str> = text
+            .lines()
+            .filter(|l| l.starts_with("#EXT-X-KEY") || l.starts_with("#EXT-X-MAP") || l.starts_with("#EXT-X-MEDIA-SEQUENCE"))
+            .collect();
+        (segments, keys.iter().map(|l| l.to_string()).collect::<Vec<_>>())
+    };
+    shape(saved) == shape(fresh)
 }
 
 /// Where every file of `plan` comes from, without query strings (they often carry per-session
@@ -1388,28 +1705,57 @@ pub fn hls_source_stamp(plan: &HlsPlan) -> String {
 /// the download. `None` when it cannot be read or planned; ffmpeg then reads it itself. A
 /// private address (the variant, or a redirect hop) is an error instead, because handing the
 /// playlist to ffmpeg would reach that address anyway.
-async fn fetch_hls_plan(url: &str, headers: &RequestHeaders) -> Result<Option<HlsPlan>, String> {
+async fn fetch_hls_plan(url: &str, headers: &RequestHeaders, quality: &str) -> Result<Option<(HlsPlan, u32)>, String> {
     let client = stream_client()?;
     let mut current = url.to_string();
+    let mut height = 0;
     for _ in 0..3 {
         let target = guarded_stream_url(&current)?;
-        let response = match apply_headers(client.get(&target), headers).timeout(Duration::from_secs(30)).send().await {
-            Ok(response) => response,
-            Err(e) if e.is_redirect() => return Err(redirect_refusal(&e)),
-            Err(_) => return Ok(None),
-        };
-        let Ok(response) = response.error_for_status() else { return Ok(None) };
-        let final_url = response.url().to_string();
-        let Ok(text) = response.text().await else { return Ok(None) };
+        let Some((final_url, text)) = get_playlist(&client, &target, headers).await? else { return Ok(None) };
         if text.contains("#EXT-X-STREAM-INF") {
-            let Some(variant) = best_hls_variant(&text, &final_url) else { return Ok(None) };
-            current = variant;
+            let Some((variant, picked)) = hls_variant_pick(&text, &final_url, quality_height(quality)) else { return Ok(None) };
+            (current, height) = (variant, picked);
             continue;
         }
-        return Ok(plan_hls_download(&text, &final_url));
+        return Ok(plan_hls_download(&text, &final_url).map(|plan| (plan, height)));
     }
     Ok(None)
 }
+
+/// The playlist at `target` and the URL it ended up at, retried like a segment. `None` when the
+/// host keeps refusing it; a refused redirect or a 403 is an error.
+async fn get_playlist(client: &reqwest::Client, target: &str, headers: &RequestHeaders) -> Result<Option<(String, String)>, String> {
+    use engine::FetchError;
+    let policy = engine::RetryPolicy::APP;
+    let mut attempt = 0;
+    loop {
+        let error = match apply_headers(client.get(target), headers).timeout(Duration::from_secs(30)).send().await {
+            Ok(response) if response.status().is_success() => {
+                let final_url = response.url().to_string();
+                match response.text().await {
+                    Ok(text) => return Ok(Some((final_url, text))),
+                    Err(e) => FetchError::Connect(e.to_string()),
+                }
+            }
+            Ok(response) => FetchError::Status { code: response.status().as_u16(), retry_after: engine::retry_after_of(&response) },
+            Err(e) if e.is_redirect() => return Err(redirect_refusal(&e)),
+            Err(e) if e.is_timeout() => FetchError::Timeout,
+            Err(e) => FetchError::Connect(e.to_string()),
+        };
+        engine::note_failure(target, &error);
+        if matches!(error, FetchError::Status { code: 403, .. }) {
+            return Err(PLAYLIST_REFUSED.to_string());
+        }
+        attempt += 1;
+        if !engine::is_retryable(&error) || attempt >= policy.max_tries {
+            return Ok(None);
+        }
+        engine::wait_before_retry(&policy, attempt - 1, &error).await;
+    }
+}
+
+/// `get_playlist`'s error for a 403: the signed link expired, which a renewed stream can fix.
+const PLAYLIST_REFUSED: &str = "The stream's playlist answered HTTP 403";
 
 /// Why a redirect was not followed: the hop's refusal from `check_download_url`, or too many
 /// hops. reqwest's own text names only the first URL.
@@ -1422,43 +1768,24 @@ fn redirect_refusal(e: &reqwest::Error) -> String {
     }
 }
 
-/// Fetches one file of an HLS stream to `path`. Returns its size.
-async fn fetch_hls_file(client: &reqwest::Client, url: &str, headers: &RequestHeaders, path: &Path) -> Result<i64, String> {
-    let url = guarded_stream_url(url)?;
-    let mut res = match tokio::time::timeout(STALL_TIMEOUT, apply_headers(client.get(&url), headers).send()).await {
-        Ok(Ok(res)) => res,
-        Ok(Err(e)) if e.is_redirect() => return Err(redirect_refusal(&e)),
-        Ok(Err(e)) => return Err(format!("Could not reach the stream host: {}", e)),
-        Err(_) => return Err("The stream host did not answer in time.".to_string()),
-    };
-    if !res.status().is_success() {
-        return Err(format!("A segment of the stream could not be fetched: HTTP {}.", res.status()));
-    }
-    let expected = res.content_length();
-    let mut file = tokio::fs::File::create(path)
-        .await
-        .map_err(|e| format!("Could not create {}: {}", path.display(), e))?;
-    let mut written: u64 = 0;
-    loop {
-        let chunk = match tokio::time::timeout(STALL_TIMEOUT, res.chunk()).await {
-            Ok(Ok(Some(chunk))) => chunk,
-            Ok(Ok(None)) => break,
-            Ok(Err(e)) => return Err(format!("A segment of the stream was interrupted: {}", e)),
-            Err(_) => return Err(format!("The stream stalled: no data for {} seconds.", STALL_TIMEOUT.as_secs())),
-        };
-        if written == 0 && sniff_text_body(&chunk) == Some("html") {
-            return Err("The stream host returned a web page instead of a video.".to_string());
-        }
-        file.write_all(&chunk)
-            .await
-            .map_err(|e| format!("Could not write to {}: {}", path.display(), e))?;
-        written += chunk.len() as u64;
-    }
-    file.flush().await.map_err(|e| format!("Could not write to {}: {}", path.display(), e))?;
-    if expected.is_some_and(|total| total != written) {
-        return Err(format!("A segment of the stream is incomplete: received {} bytes.", written));
-    }
-    Ok(written as i64)
+/// Asks the extension for the stream again and returns the new URL of every file of the plan.
+/// The new stream must be the one being downloaded (`saved` is its local playlist), or the
+/// segments already saved could not be joined with the new ones.
+fn renewal(source: SourceFn, quality: String, saved: String) -> engine::RenewFn {
+    Arc::new(move || {
+        let (source, quality, saved) = (source.clone(), quality.clone(), saved.clone());
+        Box::pin(async move {
+            let fresh = source().await?;
+            let url = guarded_stream_url(&fresh.url)?;
+            let (plan, _) = fetch_hls_plan(&url, &request_headers(&fresh), &quality)
+                .await?
+                .ok_or_else(|| "the new stream could not be read".to_string())?;
+            if !same_hls_shape(&saved, &plan.playlist) {
+                return Err("the new stream does not have the same segments or keys".to_string());
+            }
+            plan.files.iter().map(|(url, _)| guarded_stream_url(url)).collect()
+        })
+    })
 }
 
 /// Downloads a planned HLS stream: every file into the download's segment folder, skipping
@@ -1495,30 +1822,56 @@ async fn download_hls_files(
     }
 
     let client = stream_client()?;
-    let mut reporter = ProgressReporter::new(job.pool, &job.record.id);
-    let mut bytes: i64 = 0;
-    let total = plan.files.len() as f64;
-    for (done, (url, name)) in plan.files.iter().enumerate() {
-        let path = folder.join(name);
-        if let Ok(meta) = tokio::fs::metadata(&path).await {
-            bytes += meta.len() as i64;
-            continue;
-        }
-        // Written under a temporary name, so a file that exists is always complete.
-        let partial = folder.join(format!("{}.tmp", name));
-        bytes += fetch_hls_file(&client, url, headers, &partial).await?;
-        tokio::fs::rename(&partial, &path)
-            .await
-            .map_err(|e| format!("Could not save {}: {}", path.display(), e))?;
-        reporter.report(Some(0.05 + 0.85 * (done + 1) as f64 / total), Some(bytes)).await;
+    let mut urls = Vec::with_capacity(plan.files.len());
+    for (url, _) in &plan.files {
+        urls.push(guarded_stream_url(url)?);
     }
+    let paths: Vec<PathBuf> = plan.files.iter().map(|(_, name)| folder.join(name)).collect();
+    let renew = job.renew.clone().map(|source| renewal(source, job.record.quality.clone(), plan.playlist.clone()));
+    let options = engine::SegmentOptions {
+        headers: header_pairs(headers),
+        retry: engine::RetryPolicy::APP,
+        limits: engine::HOST_LIMITS.clone(),
+        renew,
+    };
+    let meter = engine::SpeedMeter::new(engine::SPEED_WINDOW);
+    let fetched = with_progress(
+        job,
+        &meter,
+        |m| {
+            let (done, all) = m.items();
+            (all > 0).then(|| 0.05 + 0.85 * done as f64 / all as f64)
+        },
+        |m| {
+            let (done, all) = m.items();
+            // The size is not known up front, so it is estimated from the segments so far.
+            (done > 0).then(|| (m.bytes() as f64 * (all - done) as f64 / done as f64) as u64)
+        },
+        engine::fetch_files(&client, &urls, &paths, &plan.encrypted, &options, Some(&meter)),
+    )
+    .await;
+    if let Err(e) = fetched {
+        return Err(fetch_failure(e, None));
+    }
+    let media: Vec<(PathBuf, bool)> = plan
+        .files
+        .iter()
+        .zip(&paths)
+        .zip(&plan.encrypted)
+        .filter(|(((_, name), _), _)| name.starts_with("seg"))
+        .map(|((_, p), enc)| (p.clone(), *enc))
+        .collect();
+    let (media, media_encrypted): (Vec<PathBuf>, Vec<bool>) = media.into_iter().unzip();
+    engine::verify_files_before_mux(&media, &media_encrypted)?;
+    let mut reporter = ProgressReporter::new(job.pool, &job.record.id);
+    reporter.report(Some(0.90), Some(meter.bytes() as i64)).await;
 
     let input = FfmpegInput::LocalHls { playlist: index, hls };
-    let (video, embedded) =
+    let (video, _) =
         mux_with_ffmpeg(job, &input, subtitles.first(), &mut reporter, Some(plan.duration_s), (0.90, 0.99))
             .await
             .map_err(|e| e.to_string())?;
-    finalize(job, &video, "mkv", subtitles, embedded.then_some(0)).await
+    finalize(job, &video, "mkv", subtitles).await
 }
 
 /// `bytes <start>-<end>/<total>` of a `Content-Range` header as `(start, total)`.
@@ -1567,11 +1920,15 @@ async fn mux_with_ffmpeg(
 /// by creating it, so two downloads finishing together cannot pick the same one and an
 /// existing file is never overwritten. Returns the path and its stem.
 async fn reserve_final_path(job: &Job<'_>, ext: &str) -> Result<(PathBuf, String), String> {
+    let got = job.got_height.load(std::sync::atomic::Ordering::Relaxed);
+    let record = job.record;
+    let base = downloaded_base_name(&record.series_title, record.episode_num, &record.category, &record.quality, Some(got));
+    let _ = tokio::fs::create_dir_all(&job.dir).await;
     for n in 1..=999u32 {
         let stem = if n == 1 {
-            job.base.clone()
+            base.clone()
         } else {
-            format!("{} ({})", job.base, n)
+            format!("{} ({})", base, n)
         };
         let path = job.dir.join(format!("{}.{}", stem, ext));
         match tokio::fs::OpenOptions::new()
@@ -1591,19 +1948,18 @@ async fn reserve_final_path(job: &Job<'_>, ext: &str) -> Result<(PathBuf, String
     }
     Err(format!(
         "Too many files named \"{}\" in {}",
-        job.base,
+        base,
         job.dir.display()
     ))
 }
 
-/// Moves the finished video to its final name and keeps the subtitles that are not inside
-/// it as side files next to it.
+/// Moves the finished video to its final name and keeps every subtitle as a side file next to
+/// it. The first one is also inside the video, but the web player reads only side files.
 async fn finalize(
     job: &Job<'_>,
     video: &Path,
     ext: &str,
     subtitles: &[SubtitleInput],
-    embedded: Option<usize>,
 ) -> Result<Finished, String> {
     let size = match tokio::fs::metadata(video).await {
         Ok(meta) if meta.len() > 0 => meta.len() as i64,
@@ -1620,9 +1976,6 @@ async fn finalize(
 
     let mut used: Vec<String> = Vec::new();
     for (idx, sub) in subtitles.iter().enumerate() {
-        if embedded == Some(idx) {
-            continue;
-        }
         let language = sanitize_filename(&sub.language).to_lowercase().replace(' ', "_");
         let mut label = truncate_to_bytes(&language, 24).to_string();
         if label.is_empty() {
@@ -1641,7 +1994,8 @@ async fn finalize(
         }
     }
 
-    Ok(Finished { path: final_path, size })
+    let quality = saved_quality(&job.record.quality, Some(job.got_height.load(std::sync::atomic::Ordering::Relaxed)));
+    Ok(Finished { path: final_path, size, quality })
 }
 
 
@@ -1689,6 +2043,30 @@ pub fn delete_finished_files(video: &Path) -> Result<usize, String> {
     Ok(removed)
 }
 
+/// [`delete_finished_files`], then removes the episode folder and the title folder when they
+/// are empty. Only folders strictly inside `root` are removed, so a download made before the
+/// folder was changed, or a flat one, leaves its folder alone.
+pub fn delete_download_files(video: &Path, root: &Path) -> Result<usize, String> {
+    let removed = delete_finished_files(video)?;
+    if let Some(episode) = video.parent() {
+        prune_empty_folders(episode, root);
+    }
+    Ok(removed)
+}
+
+/// Removes `episode` and then its parent (the title folder) while they are empty. Only folders
+/// strictly inside `root` go, and never through a `..`.
+pub fn prune_empty_folders(episode: &Path, root: &Path) {
+    if episode.components().any(|c| c == std::path::Component::ParentDir) || lock(&BUSY_FOLDERS).contains_key(episode) {
+        return;
+    }
+    for dir in [Some(episode), episode.parent()].into_iter().flatten() {
+        if dir == root || !dir.starts_with(root) || std::fs::remove_dir(dir).is_err() {
+            break;
+        }
+    }
+}
+
 async fn download_stream_with_ffmpeg(
     job: &Job<'_>,
     url: &str,
@@ -1698,8 +2076,24 @@ async fn download_stream_with_ffmpeg(
 ) -> Result<Finished, String> {
     let hls_options = probe_ffmpeg().await.map_err(|e| e.to_string())?;
     if kind == StreamKind::Hls {
-        if let Some(plan) = fetch_hls_plan(url, headers).await? {
-            return download_hls_files(job, &plan, headers, hls_options, subtitles).await;
+        let (planned, headers) = match fetch_hls_plan(url, headers, &job.record.quality).await {
+            // An expired link goes through renewal when there is a way to renew it.
+            Err(e) if e == PLAYLIST_REFUSED => match &job.renew {
+                None => (None, headers.clone()),
+                Some(renew) => {
+                    let fresh = renew().await.map_err(|e| format!("The stream link expired and could not be renewed: {}", e))?;
+                    let fresh_headers = request_headers(&fresh);
+                    (fetch_hls_plan(&fresh.url, &fresh_headers, &job.record.quality).await?, fresh_headers)
+                }
+            },
+            other => (other?, headers.clone()),
+        };
+        if let Some((plan, height)) = planned {
+            // A media playlist without a master names no height: the stream's label then stands.
+            if height > 0 {
+                job.got_height.store(height, std::sync::atomic::Ordering::Relaxed);
+            }
+            return download_hls_files(job, &plan, &headers, hls_options, subtitles).await;
         }
     }
     let input = FfmpegInput::Remote {
@@ -1717,12 +2111,44 @@ async fn download_stream_with_ffmpeg(
     };
 
     let mut reporter = ProgressReporter::new(job.pool, &job.record.id);
-    let (video, embedded) =
-        mux_with_ffmpeg(job, &input, subtitles.first(), &mut reporter, duration_s, (0.05, 0.99))
-        .await
-        .map_err(|e| e.to_string())?;
+    let mut retries = 0;
+    let video = loop {
+        match mux_with_ffmpeg(job, &input, subtitles.first(), &mut reporter, duration_s, (0.05, 0.99)).await {
+            Ok((video, _)) => break video,
+            // ffmpeg reads the stream itself here, so a dropped connection or a 5xx is retried.
+            Err(FfmpegError::Failed { stderr_tail, .. }) if retries < FFMPEG_NETWORK_RETRIES && ffmpeg_network_failure(&stderr_tail) => {
+                warn!("ffmpeg lost the stream of download {} ({}); trying again", job.record.id, stderr_tail);
+                tokio::time::sleep(engine::backoff_delay(&engine::RetryPolicy::APP, retries, None, 0)).await;
+                retries += 1;
+            }
+            Err(e) => return Err(e.to_string()),
+        }
+    };
 
-    finalize(job, &video, "mkv", subtitles, embedded.then_some(0)).await
+    finalize(job, &video, "mkv", subtitles).await
+}
+
+/// Times ffmpeg is started again when it reads a stream itself and the network fails.
+const FFMPEG_NETWORK_RETRIES: u32 = 3;
+
+/// Whether the end of ffmpeg's stderr says the network failed (not that the stream is bad).
+pub fn ffmpeg_network_failure(stderr_tail: &str) -> bool {
+    const SIGNS: [&str; 13] = [
+        "Server returned 5",
+        "Server returned 429",
+        "Server returned 408",
+        "Connection reset",
+        "Connection timed out",
+        "Connection refused",
+        "Connection closed",
+        "Operation timed out",
+        "Network is unreachable",
+        "Input/output error",
+        "I/O error",
+        "Error in the pull function",
+        "End of file",
+    ];
+    SIGNS.iter().any(|sign| stderr_tail.contains(sign))
 }
 
 async fn download_file(
@@ -1732,126 +2158,40 @@ async fn download_file(
     headers: &RequestHeaders,
     subtitles: &[SubtitleInput],
 ) -> Result<Finished, String> {
-    // A run of the app that was stopped leaves the bytes so far and the total they belong to.
+    // A run of the app that was stopped leaves the bytes so far and a note of the total and
+    // validator they belong to.
     let temp = job.work_path("download");
-    let total_note = job.work_path("resume");
-    let have = tokio::fs::metadata(&temp).await.map(|m| m.len()).unwrap_or(0);
-    let promised = tokio::fs::read_to_string(&total_note).await.ok().and_then(|t| t.trim().parse::<u64>().ok());
-    let mut offset = promised.filter(|total| have > 0 && have < *total).map(|_| have);
-
-    let mut res = loop {
-        let mut request = apply_headers(client.get(url), headers);
-        if let Some(from) = offset {
-            request = request.header("Range", format!("bytes={}-", from));
-        }
-        let res = match tokio::time::timeout(STALL_TIMEOUT, request.send()).await {
-            Ok(Ok(res)) => res,
-            Ok(Err(e)) if e.is_redirect() => return Err(redirect_refusal(&e)),
-            Ok(Err(e)) => return Err(format!("Could not reach the stream host: {}", e)),
-            Err(_) => return Err("The stream host did not answer in time.".to_string()),
-        };
-        let Some(from) = offset else { break res };
-        let range = res
-            .headers()
-            .get(reqwest::header::CONTENT_RANGE)
-            .and_then(|v| v.to_str().ok())
-            .and_then(parse_content_range);
-        if res.status() == reqwest::StatusCode::PARTIAL_CONTENT && range == Some((from, promised.unwrap_or(0))) {
-            info!("Resuming download {} at byte {}", job.record.id, from);
-            break res;
-        }
-        offset = None;
-        // A full body means the host ignored the range; anything else is asked for again whole.
-        if res.status() == reqwest::StatusCode::OK {
-            break res;
-        }
-    };
-
-    if !res.status().is_success() {
-        return Err(format!("The stream host answered HTTP {}.", res.status()));
+    let note = job.work_path("resume");
+    let options = engine::DirectOptions { headers: header_pairs(headers), ..Default::default() };
+    for part in 0..options.max_connections {
+        job.work.track(&engine::part_path(&temp, part));
     }
-
-    let expected = match offset {
-        Some(_) => promised,
-        None => res.content_length().filter(|len| *len > 0),
-    };
-    let file = match offset {
-        Some(_) => tokio::fs::OpenOptions::new().append(true).open(&temp).await,
-        None => {
-            // The total is noted so a later run can tell the partial file belongs to this body.
-            match expected {
-                Some(total) => tokio::fs::write(&total_note, total.to_string()).await,
-                None => tokio::fs::remove_file(&total_note).await.or(Ok(())),
-            }
-            .map_err(|e| format!("Could not write {}: {}", total_note.display(), e))?;
-            tokio::fs::File::create(&temp).await
-        }
-    }
-    .map_err(|e| format!("Could not create {}: {}", temp.display(), e))?;
-    let mut file = BufWriter::with_capacity(1 << 20, file);
-    let write_error = |e: std::io::Error| format!("Could not write to {}: {}", temp.display(), e);
-
-    let mut reporter = ProgressReporter::new(job.pool, &job.record.id);
-    let mut downloaded: u64 = offset.unwrap_or(0);
-    loop {
-        let chunk = match tokio::time::timeout(STALL_TIMEOUT, res.chunk()).await {
-            Ok(Ok(Some(chunk))) => chunk,
-            Ok(Ok(None)) => break,
-            Ok(Err(e)) => {
-                // The bytes still buffered are written out, so a retry resumes after them.
-                let _ = file.flush().await;
-                return Err(format!(
-                    "The download was interrupted after {} bytes: {}",
-                    downloaded, e
-                ))
-            }
-            Err(_) => {
-                let _ = file.flush().await;
-                return Err(format!(
-                    "The download stalled after {} bytes: no data for {} seconds.",
-                    downloaded,
-                    STALL_TIMEOUT.as_secs()
-                ))
-            }
-        };
-
-        if downloaded == 0 {
-            match sniff_text_body(&chunk) {
-                Some(manifest @ ("hls" | "dash")) => {
-                    // A playlist, not a media file: hand the URL to ffmpeg instead of
-                    // saving the playlist text.
-                    drop(file);
-                    let _ = tokio::fs::remove_file(&temp).await;
-                    job.work.release(&temp);
-                    let kind = if manifest == "hls" { StreamKind::Hls } else { StreamKind::Dash };
-                    return download_stream_with_ffmpeg(job, url, headers, kind, subtitles).await;
-                }
-                Some(_) => {
-                    return Err("The stream host returned a web page instead of a video.".to_string())
-                }
-                None => {}
+    let meter = engine::SpeedMeter::new(engine::SPEED_WINDOW);
+    let result = with_progress(
+        job,
+        &meter,
+        |m| m.expected().map(|total| 0.05 + 0.90 * (m.bytes() as f64 / total as f64).min(1.0)),
+        |m| m.expected().map(|total| total.saturating_sub(m.bytes())),
+        engine::download_partial(client, url, &temp, &note, &options, Some(&meter)),
+    )
+    .await;
+    match result {
+        Ok(report) => {
+            if report.resumed_from > 0 {
+                info!("Resumed download {} at byte {}", job.record.id, report.resumed_from);
             }
         }
-
-        file.write_all(&chunk).await.map_err(write_error)?;
-        downloaded += chunk.len() as u64;
-
-        let fraction = expected.map(|total| 0.05 + 0.90 * (downloaded as f64 / total as f64).min(1.0));
-        reporter.report(fraction, Some(downloaded as i64)).await;
-    }
-
-    file.flush().await.map_err(write_error)?;
-    drop(file);
-
-    if downloaded == 0 {
-        return Err("The stream host sent an empty response.".to_string());
-    }
-    if let Some(total) = expected {
-        if downloaded != total {
-            return Err(format!(
-                "The download is incomplete: received {} of {} bytes.",
-                downloaded, total
-            ));
+        Err(engine::FetchError::Manifest(manifest)) => {
+            // A playlist, not a media file: hand the URL to ffmpeg instead of saving the text.
+            let _ = tokio::fs::remove_file(&temp).await;
+            let _ = tokio::fs::remove_file(&note).await;
+            job.work.release(&temp);
+            let kind = if manifest == "hls" { StreamKind::Hls } else { StreamKind::Dash };
+            return download_stream_with_ffmpeg(job, url, headers, kind, subtitles).await;
+        }
+        Err(e) => {
+            let have = tokio::fs::metadata(&temp).await.map(|m| m.len()).unwrap_or(0);
+            return Err(fetch_failure(e, Some(have)));
         }
     }
 
@@ -1860,8 +2200,8 @@ async fn download_file(
     let mut reporter = ProgressReporter::new(job.pool, &job.record.id);
     let input = FfmpegInput::Local(temp.clone());
     match mux_with_ffmpeg(job, &input, subtitles.first(), &mut reporter, job.record.duration_s, (0.95, 0.99)).await {
-        Ok((video, embedded)) => {
-            let finished = finalize(job, &video, "mkv", subtitles, embedded.then_some(0)).await?;
+        Ok((video, _)) => {
+            let finished = finalize(job, &video, "mkv", subtitles).await?;
             let _ = tokio::fs::remove_file(&temp).await;
             job.work.release(&temp);
             Ok(finished)
@@ -1873,7 +2213,7 @@ async fn download_file(
                 }
                 other => warn!("Keeping download {} in its original container: {}", job.record.id, other),
             }
-            finalize(job, &temp, container_extension(url), subtitles, None).await
+            finalize(job, &temp, container_extension(url), subtitles).await
         }
     }
 }
@@ -1882,8 +2222,10 @@ async fn transfer<S>(
     pool: &SqlitePool,
     record: &DownloadRecord,
     source: S,
-    dir: Option<PathBuf>,
+    place: Place,
     work: &WorkFiles,
+    renew: Option<SourceFn>,
+    attempt: Option<&Attempt>,
 ) -> Result<Finished, String>
 where
     S: Future<Output = Result<DownloadSource, String>>,
@@ -1891,15 +2233,23 @@ where
     let source = source.await?;
     let url = guarded_stream_url(&source.url)?;
 
-    let (audio, sub) = download_languages(&record.category, source.language.as_deref(), &source.subtitles);
+    let chosen = select_subtitles(&source.subtitles, source.subtitle_languages.as_deref());
+    let (audio, sub) = download_languages(
+        &record.category,
+        source.language.as_deref(),
+        // The first chosen track is the one embedded in the video.
+        &chosen[..chosen.len().min(1)],
+    );
     if let Err(e) = db::set_download_languages(pool, &record.id, audio.as_deref(), sub.as_deref()).await {
         warn!("Could not save the languages of download {}: {}", record.id, e);
     }
 
-    let dir = match dir {
-        Some(dir) => dir,
-        None => tokio::task::spawn_blocking(|| {
+    let (root, nested) = match place {
+        Place::Flat(dir) => (dir, false),
+        Place::Under(root) => (root, true),
+        Place::Default => (tokio::task::spawn_blocking(|| {
             let dir = get_download_dir()?;
+            engine::LIMITER.set_limit(read_settings().as_ref().and_then(engine::speed_limit_bps));
             // So startup can clean this folder up after the user has chosen another one.
             if let Ok(app) = db::get_app_dir() {
                 remember_work_dir(&app.join(WORK_DIRS_FILE), &dir);
@@ -1908,8 +2258,20 @@ where
         })
         .await
         .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())?,
+        .map_err(|e| e.to_string())?, true),
     };
+    // What an earlier try kept belongs to its own stream; joined with this one it would be garbage.
+    if attempt.is_some_and(|a| a.switches_stream(&source.url)) {
+        let (folder, row) = (root.clone(), record.clone());
+        let removed = tokio::task::spawn_blocking(move || remove_resume_files(&folder, &row)).await.unwrap_or(0);
+        if removed > 0 {
+            info!("Download {} moved to another stream; removed {} saved part(s) of the previous one", record.id, removed);
+        }
+    }
+    let dir = if nested { download_folder(&root, record) } else { root.clone() };
+    if nested && dir != root {
+        work.use_folder(dir.clone(), root.clone());
+    }
     tokio::fs::create_dir_all(&dir)
         .await
         .map_err(|e| format!("Could not create the download folder {}: {}", dir.display(), e))?;
@@ -1921,6 +2283,8 @@ where
         base: output_base_name(&record.series_title, record.episode_num, &record.category, &record.quality),
         tag: work_tag(&record.id),
         work,
+        got_height: std::sync::atomic::AtomicU32::new(source.height.unwrap_or(0)),
+        renew,
     };
 
     if let Err(e) = db::update_download_progress(pool, &record.id, Some(0.05), None).await {
@@ -1929,7 +2293,7 @@ where
 
     let client = stream_client()?;
     let headers = request_headers(&source);
-    let subtitles = fetch_subtitles(&job, &client, &headers, &source.subtitles).await;
+    let subtitles = fetch_subtitles(&job, &client, &headers, &chosen).await;
 
     match classify_stream(&url, source.stream_type.as_deref()) {
         StreamKind::File => download_file(&job, &client, &url, &headers, &subtitles).await,
@@ -1949,14 +2313,25 @@ async fn cancelled(mut cancel: watch::Receiver<bool>) {
     }
 }
 
+/// Where a job saves: straight into a folder (old layout, tests), under a download folder in
+/// `<title>/Episode NN`, or under the configured download folder.
+#[derive(Clone)]
+enum Place {
+    Flat(PathBuf),
+    Under(PathBuf),
+    Default,
+}
+
 /// Runs one download from source resolution to the final row update. When `cancel` turns
 /// true the work is dropped (which kills ffmpeg) and the working files are removed.
 async fn run_job<S>(
     pool: &SqlitePool,
     record: &DownloadRecord,
     source: S,
-    dir: Option<PathBuf>,
+    place: Place,
     cancel: watch::Receiver<bool>,
+    renew: Option<SourceFn>,
+    attempt: Option<&Attempt>,
 ) -> DownloadOutcome
 where
     S: Future<Output = Result<DownloadSource, String>>,
@@ -1973,7 +2348,7 @@ where
 
     let work = WorkFiles::default();
     let result = tokio::select! {
-        result = transfer(pool, record, source, dir, &work) => Some(result),
+        result = transfer(pool, record, source, place, &work, renew, attempt) => Some(result),
         _ = cancelled(cancel) => None,
     };
     // Nothing of the transfer is running any more, so its leftovers can go. A network failure
@@ -1984,6 +2359,7 @@ where
         }
         _ => work.remove_all().await,
     }
+    work.prune_folders();
 
     match result {
         None => {
@@ -1992,6 +2368,12 @@ where
         }
         Some(Ok(finished)) => {
             let path = finished.path.to_string_lossy().to_string();
+            // Another stream (a retry, or the closest lower one) may have had another height.
+            if let Some(quality) = &finished.quality {
+                if let Err(e) = db::set_download_quality(pool, id, quality).await {
+                    warn!("Could not save the quality of download {}: {}", id, e);
+                }
+            }
             if let Err(e) = db::update_download_status(
                 pool,
                 id,
@@ -2010,6 +2392,25 @@ where
             DownloadOutcome::Completed { path: finished.path, size: finished.size }
         }
         Some(Err(message)) => {
+            if let Some((next_try, after)) = attempt.and_then(|a| a.plan_next(id, &message)) {
+                info!("Download {} failed ({}); try {} of {} follows in {} s", id, message, next_try, DOWNLOAD_TRIES, after.as_secs());
+                let note = crate::i18n::fill(
+                    crate::i18n::current(),
+                    "download_retrying",
+                    &[("try", &next_try.to_string()), ("tries", &DOWNLOAD_TRIES.to_string())],
+                );
+                // Still DOWNLOADING, so the queue does not start it again before the wait is over.
+                if let Err(e) =
+                    db::update_download_status(pool, id, db::STATUS_DOWNLOADING, Some(0.0), None, None, None, Some(&note)).await
+                {
+                    warn!("Could not note the next try of download {}: {}", id, e);
+                }
+                return DownloadOutcome::Retrying { next_try, after };
+            }
+            let message = match attempt {
+                Some(attempt) => attempt.reason(message),
+                None => message,
+            };
             warn!("Download {} failed: {}", id, message);
             if let Err(e) = db::update_download_status(
                 pool,
@@ -2047,7 +2448,18 @@ pub async fn download_into(
     dir: &Path,
 ) -> DownloadOutcome {
     let (_keep_open, cancel) = watch::channel(false);
-    run_job(pool, record, async move { Ok(source) }, Some(dir.to_path_buf()), cancel).await
+    run_job(pool, record, async move { Ok(source) }, Place::Flat(dir.to_path_buf()), cancel, None, None).await
+}
+
+/// Like [`download_into`], saving in `<root>/<title>/Episode NN` as new downloads do.
+pub async fn download_under(
+    pool: &SqlitePool,
+    record: &DownloadRecord,
+    source: DownloadSource,
+    root: &Path,
+) -> DownloadOutcome {
+    let (_keep_open, cancel) = watch::channel(false);
+    run_job(pool, record, async move { Ok(source) }, Place::Under(root.to_path_buf()), cancel, None, None).await
 }
 
 /// Like [`download_into`], stopping as soon as `cancel` holds `true`.
@@ -2058,7 +2470,7 @@ pub async fn download_into_cancellable(
     dir: &Path,
     cancel: watch::Receiver<bool>,
 ) -> DownloadOutcome {
-    run_job(pool, record, async move { Ok(source) }, Some(dir.to_path_buf()), cancel).await
+    run_job(pool, record, async move { Ok(source) }, Place::Flat(dir.to_path_buf()), cancel, None, None).await
 }
 
 // ---------------------------------------------------------------------------------------
@@ -2079,8 +2491,10 @@ fn spawn_job<S>(
     pool: SqlitePool,
     record: DownloadRecord,
     source: S,
-    dir: Option<PathBuf>,
+    place: Place,
     permit: Option<OwnedSemaphorePermit>,
+    renew: Option<SourceFn>,
+    attempt: Option<Arc<Attempt>>,
 ) where
     S: Future<Output = Result<DownloadSource, String>> + Send + 'static,
 {
@@ -2096,23 +2510,72 @@ fn spawn_job<S>(
     }
     let (cancel_tx, cancel_rx) = watch::channel(false);
     let handle = tokio::spawn(async move {
-        let _permit = permit;
-        run_job(&pool, &record, source, dir, cancel_rx).await;
+        let permit = permit;
+        let outcome = run_job(&pool, &record, source, place, cancel_rx.clone(), renew, attempt.as_deref()).await;
+        if let DownloadOutcome::Retrying { after, .. } = outcome {
+            // The wait frees the slot for other episodes; the row stays cancellable meanwhile.
+            drop(permit);
+            QUEUE_WAKE.notify_one();
+            let waited = tokio::select! {
+                _ = tokio::time::sleep(after) => true,
+                _ = cancelled(cancel_rx) => false,
+            };
+            // Out of ACTIVE first: the queue refuses to start a row that is still in it.
+            lock(&ACTIVE).remove(&record.id);
+            if waited {
+                requeue_for_next_try(&pool, &record.id).await;
+            } else {
+                lock(&ROUNDS).remove(&record.id);
+                info!("Download {} was cancelled while waiting for its next try", record.id);
+            }
+            QUEUE_WAKE.notify_one();
+            return;
+        }
         lock(&ACTIVE).remove(&record.id);
+        drop(permit);
+        // A free slot may let the next queued download start.
+        QUEUE_WAKE.notify_one();
     });
     active.insert(id, ActiveDownload { cancel: cancel_tx, handle });
 }
 
-/// Starts downloading `source` for `record` in the background. The row of `record` must
-/// already exist with status `DOWNLOADING`.
-pub fn start_download(pool: SqlitePool, record: DownloadRecord, source: DownloadSource) {
-    spawn_job(pool, record, async move { Ok(source) }, None, None);
+/// Streams the player already resolved, by download id, for rows waiting in the queue.
+static PLAYER_SOURCES: Lazy<Mutex<HashMap<String, (DownloadSource, Instant)>>> = Lazy::new(|| Mutex::new(HashMap::new()));
+
+/// Remembers the stream the player picked for the `QUEUED` row `id` (the row must be created by
+/// the caller) and wakes the queue, so the download follows the same limits and renewal as any
+/// other. A restart forgets it, and the row is then resolved like any queued one.
+pub fn queue_with_source(id: &str, source: DownloadSource) {
+    queue_with_source_at(id, source, Instant::now());
 }
 
-/// [`start_download`] into `dir` instead of the download folder, for tests.
+/// [`queue_with_source`] as of `at`, for tests.
+#[doc(hidden)]
+pub fn queue_with_source_at(id: &str, source: DownloadSource, at: Instant) {
+    lock(&PLAYER_SOURCES).insert(id.to_string(), (source, at));
+    notify_queue();
+}
+
+/// Signed links expire; a row that waited longer than this is resolved again instead.
+const PLAYER_SOURCE_MAX_AGE: Duration = Duration::from_secs(5 * 60);
+
+/// The remembered stream of row `id`, taken out, if it is still fresh.
+#[doc(hidden)]
+pub fn take_queued_source(id: &str) -> Option<DownloadSource> {
+    lock(&PLAYER_SOURCES).remove(id).filter(|(_, at)| at.elapsed() < PLAYER_SOURCE_MAX_AGE).map(|(source, _)| source)
+}
+
+/// Forgets the source of a row that could not be created, or was deleted, and what its
+/// earlier tries used up.
+pub fn forget_queued_source(id: &str) {
+    lock(&PLAYER_SOURCES).remove(id);
+    lock(&ROUNDS).remove(id);
+}
+
+/// `start_download_in` runs a job into `dir` instead of the download folder, for tests.
 #[doc(hidden)]
 pub fn start_download_in(pool: SqlitePool, record: DownloadRecord, source: DownloadSource, dir: PathBuf) {
-    spawn_job(pool, record, async move { Ok(source) }, Some(dir), None);
+    spawn_job(pool, record, async move { Ok(source) }, Place::Flat(dir), None, None, None);
 }
 
 /// Puts a `FAILED` download back in the queue (Downloads › Try again). Any other row, or one
@@ -2127,6 +2590,8 @@ pub async fn retry_download(pool: &SqlitePool, id: &str) -> Result<bool, String>
     }
     let queued = db::requeue_failed_download(pool, id).await.map_err(|e| e.to_string())?;
     if queued {
+        // A fresh round of tries, which may use every stream again.
+        lock(&ROUNDS).remove(id);
         notify_queue();
     }
     Ok(queued)
@@ -2184,7 +2649,7 @@ pub async fn reconcile_on_startup(pool: &SqlitePool) -> Result<(), AppError> {
     Ok(())
 }
 
-/// Starts the background worker that downloads `QUEUED` rows, at most two at a time, after
+/// Starts the background worker that downloads `QUEUED` rows, as many at a time as Settings › Downloads allows, after
 /// reconciling what a previous run left behind. Call it once, after `AppState` is managed.
 pub fn spawn_queue_worker(app: tauri::AppHandle) {
     if QUEUE_STARTED.swap(true, Ordering::SeqCst) {
@@ -2207,24 +2672,34 @@ async fn queue_loop(app: tauri::AppHandle) {
         warn!("Could not reconcile downloads from the previous run: {}", e);
     }
 
+    let lookup: LookupFn = Arc::new(move |record, ask| {
+        let app = app.clone();
+        Box::pin(async move { ask_extensions(&app, &record, &ask).await })
+    });
+    run_queue(pool, lookup, Place::Default, allowed_by_settings).await;
+}
+
+/// Settings › Downloads: how many may run at once. Reads a file, so it runs on a blocking thread.
+fn allowed_by_settings() -> usize {
+    engine::parallel_downloads(&read_settings().unwrap_or_default())
+}
+
+/// Downloads the `QUEUED` rows of `pool`, `allowed()` at a time, finding their streams with `lookup`.
+async fn run_queue(pool: SqlitePool, lookup: LookupFn, place: Place, allowed: fn() -> usize) {
     let slots = Arc::new(Semaphore::new(MAX_QUEUE_DOWNLOADS));
     loop {
+        // The semaphore only holds the most that may ever run at once.
+        let allowed = tokio::task::spawn_blocking(allowed).await.unwrap_or(1);
+        if MAX_QUEUE_DOWNLOADS - slots.available_permits() >= allowed {
+            let _ = tokio::time::timeout(QUEUE_POLL_INTERVAL, QUEUE_WAKE.notified()).await;
+            continue;
+        }
         let Ok(permit) = slots.clone().acquire_owned().await else {
             return;
         };
 
         match db::claim_next_queued_download(&pool).await {
-            Ok(Some(record)) => {
-                let resolver_app = app.clone();
-                let resolver_record = record.clone();
-                spawn_job(
-                    pool.clone(),
-                    record,
-                    async move { resolve_queued_source(&resolver_app, &resolver_record).await },
-                    None,
-                    Some(permit),
-                );
-            }
+            Ok(Some(record)) => start_try(pool.clone(), record, &lookup, place.clone(), permit),
             Ok(None) => {
                 drop(permit);
                 let _ = tokio::time::timeout(QUEUE_POLL_INTERVAL, QUEUE_WAKE.notified()).await;
@@ -2238,25 +2713,304 @@ async fn queue_loop(app: tauri::AppHandle) {
     }
 }
 
-/// The one call into the provider manager. `preferred_provider` is `None` to try every
-/// provider, or a provider key to use only that one.
-async fn fetch_episode_sources(
+/// Runs the queue for the rows of `pool`, saving under `root` and asking `lookup` for streams,
+/// for tests. It stops with the runtime.
+#[doc(hidden)]
+pub fn spawn_queue_under(pool: SqlitePool, lookup: LookupFn, root: PathBuf) {
+    tokio::spawn(run_queue(pool, lookup, Place::Under(root), || MAX_QUEUE_DOWNLOADS));
+}
+
+/// Starts the next try of a claimed row: the stream the player picked on a first try, else one
+/// this round has not tried yet ([`find_source`]).
+fn start_try(pool: SqlitePool, record: DownloadRecord, lookup: &LookupFn, place: Place, permit: OwnedSemaphorePermit) {
+    let round = lock(&ROUNDS).remove(&record.id).unwrap_or_default();
+    // A stream the player picked is used as it is; the extension is asked only to renew it.
+    let player = take_queued_source(&record.id).filter(|_| round.tries == 0);
+    let attempt = Arc::new(Attempt { round: Mutex::new(round.clone()), picked: Mutex::new(None) });
+    let renew: SourceFn = {
+        let (lookup, record) = (lookup.clone(), record.clone());
+        Arc::new(move || {
+            let (lookup, record, mut round) = (lookup.clone(), record.clone(), round.clone());
+            Box::pin(async move { find_source(&lookup, &record, &mut round).await.map(|(source, _)| source) })
+        })
+    };
+    let first = {
+        let (lookup, record, attempt) = (lookup.clone(), record.clone(), attempt.clone());
+        async move {
+            let (source, extension) = match player {
+                Some(source) => (source, None),
+                None => {
+                    let mut round = lock(&attempt.round).clone();
+                    let found = find_source(&lookup, &record, &mut round).await;
+                    // Extensions found to have nothing left stay excluded for the next try.
+                    *lock(&attempt.round) = round;
+                    found?
+                }
+            };
+            *lock(&attempt.picked) = Some((stream_key(&source.url), extension));
+            Ok(source)
+        }
+    };
+    spawn_job(pool, record, first, place, Some(permit), Some(renew), Some(attempt));
+}
+
+/// Puts a row whose wait is over back in the queue with its note, unless it was deleted or
+/// changed meanwhile.
+async fn requeue_for_next_try(pool: &SqlitePool, id: &str) {
+    match db::get_download_by_id(pool, id).await {
+        Ok(Some(row)) if row.status == db::STATUS_DOWNLOADING => {
+            if let Err(e) =
+                db::update_download_status(pool, id, db::STATUS_QUEUED, Some(0.0), None, None, None, row.error_msg.as_deref()).await
+            {
+                warn!("Could not queue download {} for its next try: {}", id, e);
+            }
+        }
+        Ok(_) => {
+            lock(&ROUNDS).remove(id);
+        }
+        Err(e) => warn!("Could not read download {} for its next try: {}", id, e),
+    }
+}
+
+// ---------------------------------------------------------------------------------------
+// Trying again with another stream
+// ---------------------------------------------------------------------------------------
+
+/// Tries a queued download gets before it is marked failed, the first one included.
+pub const DOWNLOAD_TRIES: u32 = 3;
+/// The wait before the second try: a slow site often answers again soon.
+const SECOND_TRY_AFTER: Duration = Duration::from_secs(30);
+/// The wait before the third try.
+const THIRD_TRY_AFTER: Duration = Duration::from_secs(2 * 60);
+
+static RETRY_WAIT_FOR_TESTS: Lazy<Mutex<Option<Duration>>> = Lazy::new(|| Mutex::new(None));
+
+/// Makes every wait between tries `wait`, so tests need not wait minutes.
+#[doc(hidden)]
+pub fn set_retry_wait_for_tests(wait: Duration) {
+    *lock(&RETRY_WAIT_FOR_TESTS) = Some(wait);
+}
+
+/// The wait after `tries` failed tries.
+fn retry_wait(tries: u32) -> Duration {
+    lock(&RETRY_WAIT_FOR_TESTS).unwrap_or(if tries <= 1 { SECOND_TRY_AFTER } else { THIRD_TRY_AFTER })
+}
+
+/// Whether a queued download that failed with `error` is tried again with another stream. Not
+/// when the cause is on this computer (the folder cannot be made or written, the disk is full
+/// or read-only, ffmpeg is missing) or no stream can be had at all (no extension, none in the
+/// wanted languages, every one tried already): another stream cannot fix those. A cancel never
+/// gets here.
+///
+/// shortcut: matches the English failure messages of this module and the provider manager,
+/// like `keeps_partial_files_after`; a reworded local failure is tried again, which only costs time.
+pub fn worth_another_try(error: &str) -> bool {
+    const LOCAL: [&str; 13] = [
+        "Could not create",
+        "Could not write",
+        "Could not move the download",
+        "The downloaded file is missing",
+        "Too many files named",
+        "Anix cannot save downloads in",
+        "No space left on device",
+        "Read-only file system",
+        "Disk quota exceeded",
+        "Permission denied",
+        "ffmpeg is not installed",
+        "ffmpeg could not be started",
+        "The app state is not available",
+    ];
+    if LOCAL.iter().any(|m| error.contains(m)) || error == NO_PLUGIN_MESSAGE || error == NO_OTHER_PROVIDER_MESSAGE {
+        return false;
+    }
+    // "No enabled plugin offers …" is written in the interface language; its ending is fixed.
+    !crate::i18n::LANGUAGES.iter().any(|lang| {
+        let template = crate::i18n::text(lang, "play_no_language");
+        template.rsplit('}').next().is_some_and(|tail| !tail.trim().is_empty() && error.ends_with(tail))
+    })
+}
+
+/// What the tries of one round of a queued download have used up, kept between its tries.
+#[derive(Debug, Clone, Default)]
+struct Round {
+    /// Tries made so far.
+    tries: u32,
+    /// Streams that failed, by [`stream_key`].
+    failed_streams: Vec<String>,
+    /// Extensions with no stream left to try, or whose lookup failed.
+    failed_extensions: Vec<String>,
+    /// The extension of the last stream tried: its other streams come next.
+    last_extension: Option<String>,
+    /// The last stream downloaded from; what it saved is of no use to another stream.
+    last_stream: Option<String>,
+    /// Why the last try failed.
+    last_error: Option<String>,
+}
+
+/// The rounds of rows waiting for their next try, by download id. A restart forgets them, and
+/// the row (back to `QUEUED`) starts a fresh round.
+static ROUNDS: Lazy<Mutex<HashMap<String, Round>>> = Lazy::new(|| Mutex::new(HashMap::new()));
+
+/// A stream link without its query, which often holds a per-lookup token: the same server
+/// asked again is the same stream.
+fn stream_key(url: &str) -> String {
+    url.split(['?', '#']).next().unwrap_or(url).to_string()
+}
+
+/// One try of a queued download: its round so far, and the stream (by [`stream_key`]) and
+/// extension it picked.
+struct Attempt {
+    round: Mutex<Round>,
+    picked: Mutex<Option<(String, Option<String>)>>,
+}
+
+impl Attempt {
+    /// Whether `url` takes over from the stream an earlier try of the round downloaded from.
+    fn switches_stream(&self, url: &str) -> bool {
+        lock(&self.round).last_stream.as_ref().is_some_and(|last| *last != stream_key(url))
+    }
+
+    /// Notes that this try of row `id` failed with `error`. Returns the number of the next try
+    /// and the wait before it, or `None` when the round is over.
+    fn plan_next(&self, id: &str, error: &str) -> Option<(u32, Duration)> {
+        let mut round = lock(&self.round).clone();
+        if let Some((stream, extension)) = lock(&self.picked).take() {
+            round.failed_streams.push(stream.clone());
+            round.last_stream = Some(stream);
+            round.last_extension = extension;
+        }
+        round.tries += 1;
+        if error != NO_OTHER_PROVIDER_MESSAGE {
+            round.last_error = Some(error.to_string());
+        }
+        if !worth_another_try(error) || round.tries >= DOWNLOAD_TRIES {
+            lock(&ROUNDS).remove(id);
+            return None;
+        }
+        let next = (round.tries + 1, retry_wait(round.tries));
+        lock(&ROUNDS).insert(id.to_string(), round);
+        Some(next)
+    }
+
+    /// The message the row fails with: "every plugin was tried" says less than why the
+    /// previous try failed.
+    fn reason(&self, error: String) -> String {
+        if error == NO_OTHER_PROVIDER_MESSAGE {
+            lock(&self.round).last_error.clone().unwrap_or(error)
+        } else {
+            error
+        }
+    }
+}
+
+/// One question to the extensions about a row's episode: only `only` when set, otherwise every
+/// one but `excluded`. The row's category and the user's language order always apply.
+#[derive(Debug, Clone, Default)]
+pub struct Ask {
+    pub only: Option<String>,
+    pub excluded: Vec<String>,
+}
+
+/// Asks the extensions for the streams of a row's episode.
+pub type LookupFn =
+    Arc<dyn Fn(DownloadRecord, Ask) -> Pin<Box<dyn Future<Output = Result<SourcesResult, String>> + Send>> + Send + Sync>;
+
+/// Asks `manager` about the row's episode. A name it does not know (an extension removed since,
+/// a display name saved by an older version) asks every extension.
+async fn ask_manager(
     manager: &ProviderManager,
     record: &DownloadRecord,
     mal_id: Option<i64>,
-    title_romaji: Option<String>,
-    preferred_provider: Option<&str>,
-) -> Result<SourcesResult, AppError> {
+    title: Option<String>,
+    ask: &Ask,
+) -> Result<SourcesResult, String> {
+    let known = manager.provider_names();
+    let only = ask.only.as_deref().and_then(|wanted| preferred_provider(wanted, &known));
     manager
-        .get_sources_for_episode(
-            record.anilist_id,
-            mal_id,
-            record.episode_num,
-            &record.category,
-            title_romaji,
-            preferred_provider,
-        )
+        .get_sources_for_episode_excluding(record.anilist_id, mal_id, record.episode_num, &record.category, title, only, &ask.excluded)
         .await
+        .map_err(|e| e.to_string())
+}
+
+/// A lookup over `manager` that searches by the row's title, for tests.
+#[doc(hidden)]
+pub fn lookup_with(manager: Arc<ProviderManager>) -> LookupFn {
+    Arc::new(move |record, ask| {
+        let manager = manager.clone();
+        Box::pin(async move {
+            let title = Some(record.series_title.clone());
+            ask_manager(&manager, &record, None, title, &ask).await
+        })
+    })
+}
+
+/// Asks the app's extensions about a row's episode, the way the player does.
+async fn ask_extensions(app: &tauri::AppHandle, record: &DownloadRecord, ask: &Ask) -> Result<SourcesResult, String> {
+    let state = app
+        .try_state::<AppState>()
+        .ok_or_else(|| "The app state is not available".to_string())?;
+    let (mal_id, romaji) = lookup_search_keys(&state, record.anilist_id).await;
+    let title = romaji.or_else(|| Some(record.series_title.clone()).filter(|t| !t.trim().is_empty()));
+    ask_manager(&state.provider_manager, record, mal_id, title, ask).await
+}
+
+/// The extension the user picked for the row, if any.
+fn picked_extension(record: &DownloadRecord) -> Option<String> {
+    Some(record.provider.trim()).filter(|p| !p.is_empty() && !p.eq_ignore_ascii_case("auto")).map(str::to_string)
+}
+
+/// The stream of `found` this round has not tried, chosen like [`pick_stream`].
+async fn untried_source(found: &SourcesResult, record: &DownloadRecord, round: &Round) -> Result<Option<DownloadSource>, String> {
+    let left: Vec<StreamItem> =
+        found.streams.iter().filter(|s| !round.failed_streams.contains(&stream_key(&s.url))).cloned().collect();
+    let Some(stream) = pick_stream(&left, &record.quality) else {
+        return Ok(None);
+    };
+    let mut source = DownloadSource::from_stream(stream, found.subtitles.clone());
+    source.language = found.language.clone();
+    source.subtitle_languages = tokio::task::spawn_blocking(subtitle_languages_from_saved_settings)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(Some(source))
+}
+
+/// Finds a stream for a try of a row that its round has not tried: from the extension of the
+/// last try (or the one the user picked) first, then from the others in their usual order.
+/// Extensions with nothing left are added to `round`. Returns the source and its extension.
+async fn find_source(
+    lookup: &LookupFn,
+    record: &DownloadRecord,
+    round: &mut Round,
+) -> Result<(DownloadSource, Option<String>), String> {
+    let mut stay_error = None;
+    let stay = round.last_extension.clone().or_else(|| picked_extension(record));
+    if let Some(name) = stay.filter(|name| !round.failed_extensions.contains(name)) {
+        match lookup(record.clone(), Ask { only: Some(name.clone()), excluded: Vec::new() }).await {
+            Ok(found) => {
+                if let Some(source) = untried_source(&found, record, round).await? {
+                    return Ok((source, found.provider.or(Some(name))));
+                }
+            }
+            Err(e) => stay_error = Some(e),
+        }
+        round.failed_extensions.push(name);
+    }
+    loop {
+        let found = match lookup(record.clone(), Ask { only: None, excluded: round.failed_extensions.clone() }).await {
+            Ok(found) => found,
+            // Nothing left to ask: why the last extension failed says more.
+            Err(e) if e == NO_OTHER_PROVIDER_MESSAGE => return Err(stay_error.unwrap_or(e)),
+            Err(e) => return Err(e),
+        };
+        if let Some(source) = untried_source(&found, record, round).await? {
+            return Ok((source, found.provider));
+        }
+        // Every new name narrows the next question, so this ends.
+        match found.provider {
+            Some(name) if !round.failed_extensions.contains(&name) => round.failed_extensions.push(name),
+            _ => return Err("No playable stream was found for this episode.".to_string()),
+        }
+    }
 }
 
 /// Per AniList id: the MAL id and the title used for file names.
@@ -2315,26 +3069,4 @@ pub fn preferred_provider<'a>(wanted: &str, known: &[&'a str]) -> Option<&'a str
         .find(|name| **name == wanted)
         .or_else(|| known.iter().find(|name| name.eq_ignore_ascii_case(wanted)))
         .copied()
-}
-
-/// Finds a stream for a queued row the same way the player does.
-async fn resolve_queued_source(app: &tauri::AppHandle, record: &DownloadRecord) -> Result<DownloadSource, String> {
-    let state = app
-        .try_state::<AppState>()
-        .ok_or_else(|| "The app state is not available".to_string())?;
-
-    let (mal_id, romaji) = lookup_search_keys(&state, record.anilist_id).await;
-    let title = romaji.or_else(|| Some(record.series_title.clone()).filter(|t| !t.trim().is_empty()));
-    let known = state.provider_manager.provider_names();
-    let preferred = preferred_provider(&record.provider, &known);
-
-    let sources = fetch_episode_sources(&state.provider_manager, record, mal_id, title, preferred)
-        .await
-        .map_err(|e| e.to_string())?;
-
-    let stream = pick_stream(&sources.streams, &record.quality)
-        .ok_or_else(|| "No playable stream was found for this episode.".to_string())?;
-    let mut source = DownloadSource::from_stream(stream, sources.subtitles.clone());
-    source.language = sources.language.clone();
-    Ok(source)
 }

@@ -370,6 +370,7 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), AppError> {
     crate::release_check::create_tables(&mut tx).await?;
     crate::notices::create_tables(&mut tx).await?;
     migrate_watchlist_status(&mut tx).await?;
+    migrate_watchlist_episodes(&mut tx).await?;
     migrate_download_languages(&mut tx).await?;
     migrate_playlist_rule(&mut tx).await?;
 
@@ -430,7 +431,7 @@ pub async fn merge_stand_in_ids(pool: &SqlitePool) -> Result<(), AppError> {
 async fn merge_stand_ins(conn: &mut SqliteConnection) -> Result<(), AppError> {
     // The stand-in formula of `catalogue::ids::synthetic_id`, in SQL. A new or changed mapping
     // gets merged_at = 0, which marks it as not copied yet.
-    sqlx::query(&format!(
+    sqlx::query(sqlx::AssertSqlSafe(format!(
         r#"
         INSERT INTO catalogue_merged_ids (stand_in, anilist_id, merged_at)
         SELECT -((CASE site WHEN 'mal' THEN 1 WHEN 'kitsu' THEN 2 ELSE 3 END) * {span} + ext_id), anilist_id, 0
@@ -440,7 +441,7 @@ async fn merge_stand_ins(conn: &mut SqliteConnection) -> Result<(), AppError> {
         WHERE catalogue_merged_ids.anilist_id <> excluded.anilist_id
         "#,
         span = crate::catalogue::ids::SITE_SPAN
-    ))
+    )))
     .execute(&mut *conn)
     .await?;
 
@@ -466,7 +467,7 @@ async fn merge_stand_ins(conn: &mut SqliteConnection) -> Result<(), AppError> {
     .await?;
 
     for (table, key) in ANIME_KEYED_TABLES {
-        let columns: Vec<String> = sqlx::query(&format!("PRAGMA table_info({table})"))
+        let columns: Vec<String> = sqlx::query(sqlx::AssertSqlSafe(format!("PRAGMA table_info({table})")))
             .fetch_all(&mut *conn)
             .await?
             .iter()
@@ -488,12 +489,12 @@ async fn merge_stand_ins(conn: &mut SqliteConnection) -> Result<(), AppError> {
         } else {
             ""
         };
-        sqlx::query(&format!(
+        sqlx::query(sqlx::AssertSqlSafe(format!(
             "INSERT OR IGNORE INTO {table} ({}) SELECT {} FROM {table} AS t \
              JOIN catalogue_merged_ids AS m ON t.{key} = m.stand_in WHERE m.merged_at = 0{link_check}",
             columns.join(", "),
             values.join(", ")
-        ))
+        )))
         .execute(&mut *conn)
         .await?;
     }
@@ -510,7 +511,7 @@ async fn migrate_watch_history(conn: &mut SqliteConnection) -> Result<(), AppErr
         .await?;
 
     if info_rows.is_empty() {
-        sqlx::query(&watch_history_ddl("watch_history"))
+        sqlx::query(sqlx::AssertSqlSafe(watch_history_ddl("watch_history")))
             .execute(&mut *conn)
             .await?;
         return Ok(());
@@ -536,10 +537,10 @@ async fn migrate_watch_history(conn: &mut SqliteConnection) -> Result<(), AppErr
         // than guess at their meaning.
         let parked = format!("watch_history_unrecognized_{}", current_unix_millis());
         warn!("watch_history has an unknown layout; keeping it as {}", parked);
-        sqlx::query(&format!("ALTER TABLE watch_history RENAME TO {}", parked))
+        sqlx::query(sqlx::AssertSqlSafe(format!("ALTER TABLE watch_history RENAME TO {}", parked)))
             .execute(&mut *conn)
             .await?;
-        sqlx::query(&watch_history_ddl("watch_history"))
+        sqlx::query(sqlx::AssertSqlSafe(watch_history_ddl("watch_history")))
             .execute(&mut *conn)
             .await?;
         return Ok(());
@@ -585,7 +586,7 @@ async fn migrate_watch_history(conn: &mut SqliteConnection) -> Result<(), AppErr
     sqlx::query("DROP TABLE IF EXISTS watch_history_migrating")
         .execute(&mut *conn)
         .await?;
-    sqlx::query(&watch_history_ddl("watch_history_migrating"))
+    sqlx::query(sqlx::AssertSqlSafe(watch_history_ddl("watch_history_migrating")))
         .execute(&mut *conn)
         .await?;
 
@@ -613,7 +614,7 @@ async fn migrate_watch_history(conn: &mut SqliteConnection) -> Result<(), AppErr
         cover = or_null("cover"),
         completed = completed,
     );
-    sqlx::query(&copy).execute(&mut *conn).await?;
+    sqlx::query(sqlx::AssertSqlSafe(copy.clone())).execute(&mut *conn).await?;
 
     let new_count: i64 = sqlx::query("SELECT COUNT(*) AS n FROM watch_history_migrating")
         .fetch_one(&mut *conn)
@@ -730,7 +731,7 @@ async fn history_entries(pool: &SqlitePool, limit: i64) -> Result<Vec<HistoryEnt
         t = WATCHED_THRESHOLD_PERCENT
     );
 
-    let rows = sqlx::query(&sql).bind(limit).fetch_all(pool).await?;
+    let rows = sqlx::query(sqlx::AssertSqlSafe(sql.clone())).bind(limit).fetch_all(pool).await?;
     Ok(rows.into_iter().map(map_history_row).collect())
 }
 
@@ -1007,7 +1008,7 @@ pub async fn is_in_watchlist(pool: &SqlitePool, anilist_id: i32) -> Result<bool,
 pub async fn get_watchlist(pool: &SqlitePool) -> Result<Vec<crate::models::WatchlistEntry>, AppError> {
     let rows = sqlx::query(
         r#"
-        SELECT anilist_id, title, cover, format, average_score, added_at, status, synced
+        SELECT anilist_id, title, cover, format, average_score, added_at, status, synced, episodes
         FROM watchlist
         WHERE anilist_id NOT IN (SELECT stand_in FROM catalogue_merged_ids)
         ORDER BY added_at DESC
@@ -1027,6 +1028,7 @@ pub async fn get_watchlist(pool: &SqlitePool) -> Result<Vec<crate::models::Watch
             added_at: r.get("added_at"),
             status: r.get("status"),
             synced: r.get::<i64, _>("synced") != 0,
+            episodes: r.get("episodes"),
         })
         .collect();
 
@@ -1055,6 +1057,33 @@ async fn migrate_watchlist_status(conn: &mut SqliteConnection) -> Result<(), App
             .execute(&mut *conn)
             .await?;
     }
+    Ok(())
+}
+
+/// 1.4.2: the episode count of a library entry, kept past the details cache's row limit.
+async fn migrate_watchlist_episodes(conn: &mut SqliteConnection) -> Result<(), AppError> {
+    let has = sqlx::query("PRAGMA table_info(watchlist)")
+        .fetch_all(&mut *conn)
+        .await?
+        .iter()
+        .any(|r| r.get::<String, _>("name") == "episodes");
+    if !has {
+        sqlx::query("ALTER TABLE watchlist ADD COLUMN episodes INTEGER").execute(&mut *conn).await?;
+    }
+    Ok(())
+}
+
+/// Remembers the episode count of a library entry; `None` never erases a known count, and an
+/// anime that is not in the library is left alone.
+pub async fn set_watchlist_episodes(pool: &SqlitePool, anilist_id: i32, episodes: Option<i32>) -> Result<(), AppError> {
+    let Some(episodes) = episodes.filter(|e| *e > 0) else {
+        return Ok(());
+    };
+    sqlx::query("UPDATE watchlist SET episodes = ?2 WHERE anilist_id = ?1")
+        .bind(anilist_id)
+        .bind(episodes)
+        .execute(pool)
+        .await?;
     Ok(())
 }
 
@@ -1211,6 +1240,12 @@ pub async fn create_download(
 
 /// The audio and subtitle language codes of a download, once its source is known. A `None`
 /// keeps what is stored.
+/// Stores the quality a download was saved at, when it is not the one asked for.
+pub async fn set_download_quality(pool: &SqlitePool, id: &str, quality: &str) -> Result<(), AppError> {
+    sqlx::query("UPDATE downloads SET quality = ?1 WHERE id = ?2").bind(quality).bind(id).execute(pool).await?;
+    Ok(())
+}
+
 pub async fn set_download_languages(
     pool: &SqlitePool,
     id: &str,
@@ -1237,7 +1272,7 @@ async fn migrate_download_languages(conn: &mut SqliteConnection) -> Result<(), A
     for column in ["audio_lang", "sub_lang"] {
         if !columns.iter().any(|c| c == column) {
             // The name is one of the two constants above.
-            sqlx::query(&format!("ALTER TABLE downloads ADD COLUMN {} TEXT", column))
+            sqlx::query(sqlx::AssertSqlSafe(format!("ALTER TABLE downloads ADD COLUMN {} TEXT", column)))
                 .execute(&mut *conn)
                 .await?;
         }
@@ -1346,7 +1381,7 @@ pub async fn claim_next_queued_download(
         DOWNLOAD_COLUMNS
     );
 
-    let row = sqlx::query(&sql)
+    let row = sqlx::query(sqlx::AssertSqlSafe(sql.clone()))
         .bind(current_unix_millis())
         .fetch_optional(pool)
         .await?;
@@ -1401,7 +1436,7 @@ pub async fn get_all_downloads(pool: &SqlitePool) -> Result<Vec<DownloadRecord>,
         "SELECT {} FROM downloads ORDER BY updated_at DESC",
         DOWNLOAD_COLUMNS
     );
-    let rows = sqlx::query(&sql).fetch_all(pool).await?;
+    let rows = sqlx::query(sqlx::AssertSqlSafe(sql.clone())).fetch_all(pool).await?;
 
     Ok(rows.into_iter().map(map_download_row).collect())
 }
@@ -1420,7 +1455,7 @@ pub async fn get_download_by_id(
     id: &str,
 ) -> Result<Option<DownloadRecord>, AppError> {
     let sql = format!("SELECT {} FROM downloads WHERE id = ?1", DOWNLOAD_COLUMNS);
-    let row = sqlx::query(&sql).bind(id).fetch_optional(pool).await?;
+    let row = sqlx::query(sqlx::AssertSqlSafe(sql.clone())).bind(id).fetch_optional(pool).await?;
 
     Ok(row.map(map_download_row))
 }
@@ -1815,6 +1850,42 @@ pub async fn import_custom_playlist(
     Ok((playlist, parsed.items.len()))
 }
 
+/// The covers of a smart collection's last saved result (up to four), for its collage; none
+/// while it has no saved result. A hand-made playlist has no saved result either. A franchise
+/// collection (`franchise=<id>`) has no result of its own: its page is built from the details
+/// of the anime it names, saved when they were fetched, so its collage uses those.
+async fn smart_collection_covers(pool: &SqlitePool, playlist_id: &str, rule: Option<&str>) -> Vec<String> {
+    let franchise = rule.and_then(|r| r.split('&').find_map(|kv| kv.strip_prefix("franchise="))).and_then(|id| id.parse::<i64>().ok());
+    let (kind, key) = match franchise {
+        Some(id) => (crate::offline::Kind::Details, id.to_string()),
+        None => (crate::offline::Kind::Collection, playlist_id.to_string()),
+    };
+    let list = match crate::offline::load(pool, kind, &key).await.ok().flatten() {
+        Some((serde_json::Value::Array(list), _)) => list,
+        Some((details @ serde_json::Value::Object(_), _)) => franchise_entries(&details),
+        _ => return Vec::new(),
+    };
+    list.iter()
+        .filter_map(|m| m["cover_image"]["large"].as_str().or_else(|| m["coverImage"]["large"].as_str()))
+        .take(4)
+        .map(String::from)
+        .collect()
+}
+
+/// The anime of saved details and the entries of its watch order they name (prequels, sequels,
+/// side stories; not manga or novels), as in `src/lib/watchOrder.ts`.
+fn franchise_entries(details: &serde_json::Value) -> Vec<serde_json::Value> {
+    const ORDER: [&str; 3] = ["PREQUEL", "SEQUEL", "SIDE_STORY"];
+    const PRINT: [&str; 3] = ["MANGA", "NOVEL", "ONE_SHOT"];
+    let edges = details["relations"]["edges"].as_array().cloned().unwrap_or_default();
+    let related = edges
+        .into_iter()
+        .filter(|e| e["relationType"].as_str().is_some_and(|t| ORDER.contains(&t)))
+        .map(|e| e["node"].clone())
+        .filter(|n| !PRINT.contains(&n["format"].as_str().unwrap_or_default()));
+    std::iter::once(details.clone()).chain(related).collect()
+}
+
 pub async fn list_custom_playlists(
     pool: &SqlitePool,
 ) -> Result<Vec<CustomPlaylist>, AppError> {
@@ -1836,7 +1907,7 @@ pub async fn list_custom_playlists(
     let mut playlists = Vec::new();
     for r in rows {
         let covers_str: Option<String> = r.get("covers_str");
-        let covers = covers_str
+        let mut covers: Vec<String> = covers_str
             .map(|s| {
                 s.split(',')
                     .filter(|c| !c.is_empty())
@@ -1845,19 +1916,24 @@ pub async fn list_custom_playlists(
                     .collect()
             })
             .unwrap_or_default();
+        let id: String = r.get("id");
+        // A rule restored from a crafted backup is dropped rather than handed to the page.
+        let rule = crate::collection_file::validate_rule(r.get::<Option<String>, _>("rule").as_deref())
+            .ok()
+            .flatten();
+        if covers.is_empty() {
+            covers = smart_collection_covers(pool, &id, rule.as_deref()).await;
+        }
 
         playlists.push(CustomPlaylist {
-            id: r.get("id"),
+            id,
             name: r.get("name"),
             description: r.get("description"),
             created_at: r.get("created_at"),
             updated_at: r.get("updated_at"),
             item_count: r.get("item_count"),
             covers,
-            // A rule restored from a crafted backup is dropped rather than handed to the page.
-            rule: crate::collection_file::validate_rule(r.get::<Option<String>, _>("rule").as_deref())
-                .ok()
-                .flatten(),
+            rule,
         });
     }
 

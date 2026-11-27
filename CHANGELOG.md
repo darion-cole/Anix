@@ -1,5 +1,59 @@
 # Changelog
 
+## 1.4.3
+
+A milder safe mode after crashes, and a newer SQLite library.
+
+### Safe mode
+- After two starts in a row that did not exit cleanly, safe mode now turns off only WebKit's DMA-BUF renderer (`WEBKIT_DISABLE_DMABUF_RENDERER=1`). Compositing is turned off only after three or more in a row. The web player, the skipped extension refresh at start and the screen that is not reopened work as before.
+- Settings › System says when the DMA-BUF renderer is off because of safe mode.
+- A variable you set yourself is never changed, and a normal start removes only what safe mode set.
+
+### Note for NVIDIA users
+- Safe mode was tested on six distributions (Ubuntu 22.04 and 24.04, Debian 12 and 13, Fedora, Arch) with software drawing, but **not on NVIDIA hardware**.
+- With NVIDIA's own driver, the DMA-BUF renderer is usually off already (unless you use embedded mpv or Fast drawing), so the first safe-mode step changes nothing there. If Anix still does not start cleanly, the next start also turns compositing off.
+- With embedded mpv on NVIDIA, Settings › System shows the NVIDIA tip instead of the note that safe mode turned the renderer off.
+- If Anix keeps crashing on an NVIDIA machine, please open an issue and say which driver you use.
+
+### Under the hood
+- The database library is now sqlx 0.9.1 with the SQLite bundled by libsqlite3-sys 0.40 (SQLite 3.54.1), which has the fix for RUSTSEC-2026-0459. Existing data is kept as it is; no migration changed.
+- The unused `rsa` crate is no longer in the lock file (RUSTSEC-2023-0071), so the dependency audit runs without exceptions.
+- `cookie` 0.18.3 and `url` 2.5.9 fix two new advisories (RUSTSEC-2026-0594, RUSTSEC-2026-0592).
+- The release smoke test now starts each AppImage in both safe-mode steps and checks which WebKit settings it really uses.
+
+## 1.4.2
+
+Faster, sturdier downloads, more player and download settings, and more ways to build collections.
+
+### Downloads
+- Episodes download several pieces at a time, and a piece that fails is tried again by itself (waiting as long as the host asks), so a season downloads with no manual Try again. A host that refuses too many connections gets fewer, and Anix remembers that.
+- An expired stream link is renewed from the extension and the download carries on with the pieces it already has. Every piece is checked before the episode is put together, so an error page or a cut-off file is fetched again instead of ending up in the video.
+- Large single files download in parts and resume where they stopped, also after a restart.
+- The download list shows the speed and the time left. New in Settings › Downloads: **Downloads at once** (1 to 3, 1 by default) and a **Speed limit** for all downloads together.
+- A queued download that fails is tried again by itself, up to three times in all (after half a minute, then after two minutes), each time with another stream: first the other servers of the same extension, then the next extension, always in the same sub or dub and your language order. While it waits it shows "Trying another stream (2 of 3)" and frees its place for other episodes. A full disk or a folder that cannot be written is not tried again.
+- The player's Download button now queues the episode like every other download.
+- When a download ends up on a stream of another quality (a retry, or the closest one to your choice), the file name and the download list show the quality that was saved.
+- A host that cannot be reached is looked up through DNS over HTTPS when that is on Automatic.
+
+### Downloads and playing
+- Downloads are saved in a folder per title with a folder per episode (`Title/Episode 03`), and an empty folder left by a cancelled or failed download is tidied away. Downloads that were already queued or finished keep working where they are.
+- Subtitles: a download keeps the subtitle languages you prefer (Settings › Language) instead of every language, in your order, each as a file next to the video; a new switch in Settings › Downloads brings back "all languages".
+- Downloaded episodes play from their file, also from Continue, History and the Home banners; a server only wins when you pick it yourself.
+- RPM and DEB: the embedded mpv player now uses the system's mpv library (libmpv) when there is one, whatever its licence, and quietly uses the web player when there is none. The AppImage still carries its own.
+
+### Player and settings
+- **Streaming resolution** (Settings › Playback) and **Download resolution** (Settings › Downloads): Auto, 1080p, 720p, 480p or 360p. A source that lacks the size you picked uses the closest lower one, then the closest higher one.
+- **Default playback speed** (Settings › Playback): every episode starts at it. The speed menu keeps its steps from 0.5× to 3×, and **Custom** sets any speed from 0.5× to 4×. A speed changed while watching applies to that episode only, in both players and in the external mpv.
+- Drop-down menus open above the control when there is no room below, and no longer get cut off inside the sticky bar or dialogs.
+- Right-clicking an empty spot no longer opens the web page menu (Back, Reload, Inspect Element); Reload there restarted the app mid-episode. Text fields and selected text keep Cut, Copy and Paste.
+- In safe mode, or with WebKit's compositing turned off (`WEBKIT_DISABLE_COMPOSITING_MODE=1`), opening a title no longer crashes the page.
+
+### Collections
+- Discover has a **Studio** filter, and **Save as collection** keeps it. It also works while AniList is down.
+- A franchise can be saved as a collection in watch order.
+- Collections show a collage of their covers.
+- When no catalogue can be reached, smart collections show their last result, library entries keep their title, cover and episode count, and saved pages say where and how long ago they came from. Covers and banners are kept on disk for this, up to a limit you set in Settings › System (200 MB by default, the oldest dropped first). List changes made offline are counted and sent when you are back online.
+
 ## 1.4.1
 
 A small update for stability, speed and interface fixes.

@@ -75,6 +75,17 @@ fn safe_mode_starts_after_two_unclean_exits_in_a_row() {
 }
 
 #[test]
+fn compositing_counts_as_off_for_any_value_of_the_variable_but_zero() {
+    use std::ffi::OsStr;
+    // WebKitGTK's own rule; the page drops view transitions then, which abort the page without it.
+    assert!(!safe_mode::compositing_off_value(None));
+    assert!(!safe_mode::compositing_off_value(Some(OsStr::new("0"))));
+    assert!(safe_mode::compositing_off_value(Some(OsStr::new("1"))));
+    assert!(safe_mode::compositing_off_value(Some(OsStr::new("true"))));
+    assert!(safe_mode::compositing_off_value(Some(OsStr::new(""))));
+}
+
+#[test]
 fn a_marker_from_another_boot_or_login_session_is_no_crash() {
     let dir = scratch("logout");
     // Left by a session that ended with a logout or shutdown, then counted on from there.
@@ -132,4 +143,84 @@ fn an_ignored_hangup_is_seen_as_ignored() {
     unsafe { libc::signal(libc::SIGHUP, libc::SIG_DFL) };
     assert!(!anix_lib::system::sighup_ignored());
     unsafe { libc::signal(libc::SIGHUP, before) };
+}
+
+#[test]
+fn compositing_goes_off_only_after_three_unclean_exits_in_a_row() {
+    // Arrange / Act / Assert
+    for n in [0, 1, 2] {
+        assert!(!safe_mode::compositing_needed(n), "{n} crashes keep compositing on");
+    }
+    for n in [3, 4, 9] {
+        assert!(safe_mode::compositing_needed(n), "{n} crashes turn compositing off");
+    }
+    assert_eq!(safe_mode::COMPOSITING_STARTS, 3);
+    const { assert!(safe_mode::COMPOSITING_STARTS > safe_mode::UNCLEAN_STARTS) };
+}
+
+#[test]
+fn the_compositing_switch_only_touches_what_safe_mode_owns() {
+    use safe_mode::{switch_env, Switch};
+    let cases = [
+        (None, None, true, Switch::Set),
+        (None, None, false, Switch::Untouched),
+        (Some("1"), Some("1"), false, Switch::Clear),
+        (Some("1"), Some("1"), true, Switch::Untouched),
+        (Some("1"), None, false, Switch::User),
+        (Some("1"), None, true, Switch::User),
+        (Some("0"), Some("1"), true, Switch::User),
+        (Some(""), None, true, Switch::User),
+        (None, Some("1"), false, Switch::Untouched),
+    ];
+    for (value, mark, wanted, expected) in cases {
+        assert_eq!(switch_env(value, mark, wanted), expected, "{value:?} {mark:?} wanted={wanted}");
+    }
+}
+
+#[test]
+fn a_dmabuf_value_set_by_safe_mode_is_removed_by_a_normal_start_and_is_not_the_users() {
+    use anix_lib::system::hwaccel::{self, DmabufEnv};
+    // Arrange: safe mode reuses hwaccel's own mark for the DMA-BUF switch.
+    let (value, mark) = (Some("1"), Some("1"));
+
+    // Act / Assert
+    assert_eq!(hwaccel::dmabuf_env(value, mark, true), DmabufEnv::Clear);
+    assert!(!hwaccel::dmabuf_off_by_user(value, mark));
+}
+
+#[test]
+fn compositing_switch_follows_the_crash_count_and_ownership() {
+    use safe_mode::{compositing_switch as sw, Switch};
+    let cases = [
+        (2, None, None, Switch::Untouched), // step 1: compositing stays on
+        (3, None, None, Switch::Set),
+        (9, None, None, Switch::Set),
+        (2, Some("1"), Some("1"), Switch::Clear), // inherited from a step-2 run
+        (0, Some("1"), Some("1"), Switch::Clear),
+        (3, Some("1"), Some("1"), Switch::Untouched),
+        (0, Some("1"), None, Switch::User),
+        (2, Some("1"), None, Switch::User),
+        (3, Some("0"), None, Switch::User),
+    ];
+    for (n, value, mark, expected) in cases {
+        assert_eq!(sw(n, value, mark), expected, "{n} {value:?} {mark:?}");
+    }
+}
+
+#[test]
+fn a_non_utf8_user_value_is_read_as_the_users_and_left_alone() {
+    use anix_lib::system::hwaccel::{dmabuf_env, env_text, DmabufEnv};
+    use safe_mode::{switch_env, Switch};
+    use std::os::unix::ffi::OsStrExt;
+    // Arrange
+    let raw = std::ffi::OsStr::from_bytes(b"\xff");
+
+    // Act
+    let text = env_text(Some(raw));
+
+    // Assert
+    assert!(text.as_deref().is_some_and(|t| t != "1"));
+    assert_eq!(switch_env(text.as_deref(), None, true), Switch::User);
+    assert_eq!(dmabuf_env(text.as_deref(), None, false), DmabufEnv::User);
+    assert_eq!(env_text(None), None);
 }
